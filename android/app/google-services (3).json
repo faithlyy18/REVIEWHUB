@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "338671355897",
+    "project_id": "mobile-examreviewerapp",
+    "storage_bucket": "mobile-examreviewerapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:338671355897:android:d24e8da569c434acfddf28",
+        "android_client_info": {
+          "package_name": "mobileexamreviwer.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbZ3d7LrvPxqN0wL79aVrLK0-Hz8kowqM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
