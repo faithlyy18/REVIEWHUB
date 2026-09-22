@@ -19,14 +19,17 @@ class DriveUploadResult {
   });
 }
 
-/// Lets an instructor either pick a file that's already in their Google Drive
-/// or upload one from their device into it.
+/// Uploads module files straight into an instructor's own Google Drive.
 ///
-/// Uses the full `drive` scope because picking an existing file needs to list
-/// the user's Drive and change that file's sharing (the narrow `drive.file`
-/// scope can only see files this app created). Uploads go into a
-/// "ReviewHub Modules" folder. Every file used as a module is shared as
-/// "anyone with the link can view" so students can open it.
+/// Uses the narrow `drive.file` scope, so the app can only see/manage files
+/// it created itself (never the rest of the user's Drive). Uploads go into a
+/// "ReviewHub Modules" folder and are shared as "anyone with the link can
+/// view" so students can open them.
+///
+/// Picking an *existing* Drive file doesn't go through this service at all —
+/// modules_screen.dart just opens https://drive.google.com in a new tab/
+/// browser window and has the instructor paste the file's share link back,
+/// using Drive's own sharing UI.
 class GoogleDriveService {
   GoogleDriveService._();
 
@@ -34,23 +37,10 @@ class GoogleDriveService {
   static const _folderMime = 'application/vnd.google-apps.folder';
 
   static final GoogleSignIn _signIn =
-      GoogleSignIn(scopes: [drive.DriveApi.driveScope]);
+      GoogleSignIn(scopes: [drive.DriveApi.driveFileScope]);
 
   /// Email of the Google account currently connected, or null.
   static String? get connectedEmail => _signIn.currentUser?.email;
-
-  /// Access token for the connected account, for Google's own Drive Picker
-  /// widget (see google_drive_picker_web.dart). Null if not connected.
-  static Future<String?> currentAccessToken() async {
-    final auth = await _signIn.currentUser?.authentication;
-    return auth?.accessToken;
-  }
-
-  /// Optional Cloud Console API key (with the Picker API enabled) for
-  /// Google's Drive Picker widget on web. Not required for the picker to
-  /// work with an OAuth token, but Google recommends setting one — leave
-  /// blank to skip it. See the "Google Picker API" step in Cloud Console.
-  static const String pickerApiKey = '';
 
   /// Opens the Google account chooser. On web this opens a popup, so it must
   /// be called directly from a tap (before any other awaited work).
@@ -128,57 +118,6 @@ class GoogleDriveService {
         fileId: id,
         fileName: created.name ?? fileName,
         viewUrl: created.webViewLink ?? 'https://drive.google.com/file/d/$id/view',
-        accountEmail: account.email,
-      );
-    } finally {
-      client.close();
-    }
-  }
-
-  /// Lists files in the connected Drive (newest first), optionally filtered by
-  /// name. Folders are excluded.
-  static Future<List<drive.File>> listFiles({String? search}) async {
-    final client = await _signIn.authenticatedClient();
-    if (client == null) throw StateError('Google Drive is not connected.');
-    try {
-      final api = drive.DriveApi(client);
-      final q = StringBuffer("trashed = false and mimeType != '$_folderMime'");
-      final term = search?.trim() ?? '';
-      if (term.isNotEmpty) {
-        final escaped = term.replaceAll(r'\', r'\\').replaceAll("'", r"\'");
-        q.write(" and name contains '$escaped'");
-      }
-      final res = await api.files.list(
-        q: q.toString(),
-        spaces: 'drive',
-        orderBy: 'modifiedTime desc',
-        pageSize: 50,
-        $fields: 'files(id,name,mimeType,modifiedTime,size)',
-      );
-      return res.files ?? const [];
-    } finally {
-      client.close();
-    }
-  }
-
-  /// Shares an existing Drive file as view-only for anyone with the link and
-  /// returns its link. Throws if the account isn't allowed to change sharing.
-  static Future<DriveUploadResult> shareExisting(String fileId) async {
-    final account = _signIn.currentUser;
-    final client = await _signIn.authenticatedClient();
-    if (account == null || client == null) {
-      throw StateError('Google Drive is not connected.');
-    }
-    try {
-      final api = drive.DriveApi(client);
-      await _makeViewable(api, fileId);
-      final f = await api.files.get(fileId,
-          $fields: 'id,name,webViewLink') as drive.File;
-      return DriveUploadResult(
-        fileId: fileId,
-        fileName: f.name ?? '',
-        viewUrl:
-            f.webViewLink ?? 'https://drive.google.com/file/d/$fileId/view',
         accountEmail: account.email,
       );
     } finally {

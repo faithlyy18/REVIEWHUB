@@ -1,16 +1,10 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:googleapis/drive/v3.dart' as drive;
 import 'google_drive_service.dart';
-import 'google_drive_picker.dart';
-
-String _stripExtension(String name) =>
-    name.replaceFirst(RegExp(r'\.[A-Za-z0-9]{1,5}$'), '');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subject Cluster model
@@ -1909,10 +1903,13 @@ class _SmallActionButton extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Add Module Bottom Sheet
 //
-// The instructor picks a file that's already in their Google Drive, or
-// uploads one from their device (saved into their Drive). Either way the file
-// is shared view-only and saved as `fileUrl`, plus `driveFileId`, `fileName`
-// and `driveOwnerEmail`.
+// The instructor picks a file from this device; it uploads straight into
+// their own Google Drive (ReviewHub Modules folder) and is shared view-only
+// so students can open it. "Open Google Drive" is just a convenience shortcut
+// (new tab/browser window) in case they need to grab the file from Drive
+// first — it plays no part in the upload itself.
+//
+// Saved fields: `fileUrl`, `driveFileId`, `fileName`, `driveOwnerEmail`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
@@ -1935,14 +1932,9 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
   _Cluster? _selectedCluster;
   bool _saving = false;
-
-  // true = pick a file that's already in Drive, false = upload from device
-  bool _fromDrive = true;
   bool _connecting = false;
   String? _driveEmail;
   PlatformFile? _deviceFile;
-  String? _driveFileId;
-  String? _driveFileName;
 
   static const _allowedExt = [
     'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt'
@@ -1996,11 +1988,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   Future<void> _switchAccount() async {
     await GoogleDriveService.disconnect();
     if (!mounted) return;
-    setState(() {
-      _driveEmail = null;
-      _driveFileId = null;
-      _driveFileName = null;
-    });
+    setState(() => _driveEmail = null);
     await _ensureConnected();
   }
 
@@ -2023,56 +2011,17 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
-  Future<void> _pickFromDrive() async {
-    if (!await _ensureConnected() || !mounted) return;
-
-    if (kIsWeb) {
-      // Web: launch Google's own Drive Picker widget instead of an
-      // in-app list, so instructors see the real Google Drive UI.
-      final token = await GoogleDriveService.currentAccessToken();
-      if (token == null) {
-        if (mounted) {
-          _snack('Could not get a Google Drive session. Please reconnect.');
-        }
-        return;
-      }
-      DrivePickerResult? result;
-      try {
-        result = await showGoogleDrivePicker(
-          accessToken: token,
-          apiKey: GoogleDriveService.pickerApiKey,
-        );
-      } catch (e) {
-        if (mounted) _snack('Could not open Google Drive: $e');
-        return;
-      }
-      if (result != null && mounted) {
-        setState(() {
-          _driveFileId = result!.id;
-          _driveFileName = result.name;
-          if (_titleController.text.trim().isEmpty) {
-            _titleController.text = _stripExtension(result.name);
-          }
-        });
-      }
-      return;
-    }
-
-    // Non-web: fall back to the in-app Drive file list.
-    final picked = await showModalBottomSheet<drive.File>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => const _DriveFilePickerSheet(),
-    );
-    if (picked != null && mounted) {
-      setState(() {
-        _driveFileId = picked.id;
-        _driveFileName = picked.name;
-        if (_titleController.text.trim().isEmpty && picked.name != null) {
-          _titleController.text = _stripExtension(picked.name!);
-        }
-      });
+  /// Opens Google Drive in a new browser tab (web) or the device's browser
+  /// app (mobile/desktop) so the instructor can find or upload their file and
+  /// set its sharing there, using Drive's own familiar UI.
+  Future<void> _openDrive() async {
+    final uri = Uri.parse('https://drive.google.com/drive/my-drive');
+    try {
+      final opened =
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) _snack('Could not open Google Drive.');
+    } catch (e) {
+      if (mounted) _snack('Could not open Google Drive: $e');
     }
   }
 
@@ -2087,27 +2036,21 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       _snack('Please enter a module title.');
       return;
     }
-    if (_fromDrive && _driveFileId == null) {
-      _snack('Please choose a file from your Drive.');
-      return;
-    }
-    if (!_fromDrive && _deviceFile == null) {
+    if (_deviceFile == null) {
       _snack('Please choose a file to upload.');
       return;
     }
 
-    // Device uploads connect here, at the moment of saving.
+    // Connects here, at the moment of saving, if not already connected.
     if (!await _ensureConnected() || !mounted) return;
 
     setState(() => _saving = true);
 
     try {
-      final result = _fromDrive
-          ? await GoogleDriveService.shareExisting(_driveFileId!)
-          : await GoogleDriveService.upload(
-              fileName: _deviceFile!.name,
-              bytes: _deviceFile!.bytes!,
-            );
+      final result = await GoogleDriveService.upload(
+        fileName: _deviceFile!.name,
+        bytes: _deviceFile!.bytes!,
+      );
 
       await FirebaseFirestore.instance.collection('modules').add({
         'title': title,
@@ -2217,35 +2160,15 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      _fromDrive
-                          ? 'Choose a file already in your Google Drive. It will be shared with students as view-only (anyone with the link).'
-                          : 'Upload a file from this device. It is saved to your Google Drive (ReviewHub Modules folder) and shared with students as view-only.',
+                      'Choose a file from this device to upload. It is saved '
+                      'to your Google Drive (ReviewHub Modules folder) and '
+                      'shared with students as view-only. Need to grab it '
+                      'from Drive first? Use "Open Google Drive" below.',
                       style: const TextStyle(
                           fontSize: 12, color: Color(0xFF1A237E)),
                     ),
                   ),
                 ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<bool>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(
-                      value: true,
-                      icon: Icon(Icons.add_to_drive_rounded, size: 18),
-                      label: Text('From my Drive')),
-                  ButtonSegment(
-                      value: false,
-                      icon: Icon(Icons.upload_file_rounded, size: 18),
-                      label: Text('From this device')),
-                ],
-                selected: {_fromDrive},
-                onSelectionChanged: _saving
-                    ? null
-                    : (v) => setState(() => _fromDrive = v.first),
               ),
             ),
             const SizedBox(height: 20),
@@ -2359,9 +2282,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2))
                     : const Icon(Icons.save_rounded),
-                label: Text(_saving
-                    ? (_fromDrive ? 'Saving…' : 'Uploading…')
-                    : 'Save Module'),
+                label: Text(_saving ? 'Uploading…' : 'Save Module'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A237E),
                   foregroundColor: Colors.white,
@@ -2381,19 +2302,33 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   }
 
   List<Widget> _buildFileSection() {
+    const navy = Color(0xFF1A237E);
     const indigo = Color(0xFF3949AB);
     final connected = _driveEmail != null;
-    final String? pickedName =
-        _fromDrive ? _driveFileName : _deviceFile?.name;
     final busy = _saving || _connecting;
 
     return [
-      Text(_fromDrive ? 'File from Drive' : 'File from device',
-          style: const TextStyle(
+      SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: busy ? null : _openDrive,
+          icon: const Icon(Icons.open_in_new_rounded),
+          label: const Text('Open Google Drive'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: navy,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 14),
+      const Text('File from device',
+          style: TextStyle(
               fontSize: 12, fontWeight: FontWeight.w600, color: indigo)),
       const SizedBox(height: 6),
       InkWell(
-        onTap: busy ? null : (_fromDrive ? _pickFromDrive : _pickFromDevice),
+        onTap: busy ? null : _pickFromDevice,
         borderRadius: BorderRadius.circular(10),
         child: Container(
           width: double.infinity,
@@ -2410,23 +2345,17 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                       width: 20,
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : Icon(
-                      _fromDrive
-                          ? Icons.folder_open_rounded
-                          : Icons.attach_file_rounded,
-                      color: indigo,
-                      size: 20),
+                  : const Icon(Icons.attach_file_rounded,
+                      color: indigo, size: 20),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  pickedName ??
-                      (_fromDrive
-                          ? 'Tap to choose a file from your Google Drive'
-                          : 'Tap to choose a PDF, DOCX, PPTX… file'),
+                  _deviceFile?.name ??
+                      'Tap to choose a PDF, DOCX, PPTX… file',
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                       fontSize: 14,
-                      color: pickedName == null
+                      color: _deviceFile == null
                           ? Colors.grey.shade600
                           : Colors.black87),
                 ),
@@ -2482,207 +2411,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Drive file picker: lists the connected account's Drive files (newest first)
-// with a name search, and pops the chosen file.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _DriveFilePickerSheet extends StatefulWidget {
-  const _DriveFilePickerSheet();
-
-  @override
-  State<_DriveFilePickerSheet> createState() => _DriveFilePickerSheetState();
-}
-
-class _DriveFilePickerSheetState extends State<_DriveFilePickerSheet> {
-  final _searchController = TextEditingController();
-  Timer? _debounce;
-  List<drive.File> _files = const [];
-  bool _loading = true;
-  String? _error;
-  int _requestId = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _onSearchChanged(String _) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), _load);
-  }
-
-  Future<void> _load() async {
-    final id = ++_requestId;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final files =
-          await GoogleDriveService.listFiles(search: _searchController.text);
-      if (!mounted || id != _requestId) return;
-      setState(() {
-        _files = files;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted || id != _requestId) return;
-      setState(() {
-        _error = 'Could not load your Drive files: $e';
-        _loading = false;
-      });
-    }
-  }
-
-  IconData _iconFor(String? mime) {
-    if (mime == null) return Icons.insert_drive_file_rounded;
-    if (mime.contains('pdf')) return Icons.picture_as_pdf_rounded;
-    if (mime.contains('word') || mime.contains('document')) {
-      return Icons.description_rounded;
-    }
-    if (mime.contains('presentation') || mime.contains('powerpoint')) {
-      return Icons.slideshow_rounded;
-    }
-    if (mime.contains('sheet') || mime.contains('excel')) {
-      return Icons.table_chart_rounded;
-    }
-    if (mime.startsWith('image/')) return Icons.image_rounded;
-    return Icons.insert_drive_file_rounded;
-  }
-
-  String _subtitle(drive.File f) {
-    final d = f.modifiedTime?.toLocal();
-    if (d == null) return '';
-    const m = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return 'Modified ${m[d.month - 1]} ${d.day}, ${d.year}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final height = MediaQuery.of(context).size.height * 0.8;
-    return Container(
-      height: height,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      padding: EdgeInsets.fromLTRB(
-          20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2)),
-            ),
-          ),
-          Row(
-            children: [
-              const Icon(Icons.add_to_drive_rounded,
-                  color: Color(0xFF1A237E), size: 20),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('Choose from Google Drive',
-                    style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A237E))),
-              ),
-              IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded,
-                    color: Color(0xFF1A237E), size: 20),
-                tooltip: 'Close',
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _searchController,
-            onChanged: _onSearchChanged,
-            decoration: InputDecoration(
-              hintText: 'Search your Drive by file name',
-              prefixIcon: const Icon(Icons.search_rounded,
-                  color: Color(0xFF3949AB), size: 20),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: Colors.grey.shade300)),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: Colors.grey.shade300)),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: Color(0xFF1A237E), width: 1.5)),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(child: _buildBody()),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12, color: Colors.red)),
-            const SizedBox(height: 8),
-            TextButton(onPressed: _load, child: const Text('Retry')),
-          ],
-        ),
-      );
-    }
-    if (_files.isEmpty) {
-      return const Center(
-        child: Text('No files found.',
-            style: TextStyle(fontSize: 13, color: Colors.grey)),
-      );
-    }
-    return ListView.separated(
-      itemCount: _files.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (_, i) {
-        final f = _files[i];
-        return ListTile(
-          dense: true,
-          leading: Icon(_iconFor(f.mimeType), color: const Color(0xFF3949AB)),
-          title: Text(f.name ?? 'Untitled',
-              maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(_subtitle(f), style: const TextStyle(fontSize: 11)),
-          onTap: () => Navigator.pop(context, f),
-        );
-      },
-    );
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Auto-dismiss progress bar widget
