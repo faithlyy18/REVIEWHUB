@@ -39,6 +39,19 @@ class GoogleDriveService {
   /// Email of the Google account currently connected, or null.
   static String? get connectedEmail => _signIn.currentUser?.email;
 
+  /// Access token for the connected account, for Google's own Drive Picker
+  /// widget (see google_drive_picker_web.dart). Null if not connected.
+  static Future<String?> currentAccessToken() async {
+    final auth = await _signIn.currentUser?.authentication;
+    return auth?.accessToken;
+  }
+
+  /// Optional Cloud Console API key (with the Picker API enabled) for
+  /// Google's Drive Picker widget on web. Not required for the picker to
+  /// work with an OAuth token, but Google recommends setting one — leave
+  /// blank to skip it. See the "Google Picker API" step in Cloud Console.
+  static const String pickerApiKey = '';
+
   /// Opens the Google account chooser. On web this opens a popup, so it must
   /// be called directly from a tap (before any other awaited work).
   static Future<String?> connect() async {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -6,6 +7,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'google_drive_service.dart';
+import 'google_drive_picker.dart';
+
+String _stripExtension(String name) =>
+    name.replaceFirst(RegExp(r'\.[A-Za-z0-9]{1,5}$'), '');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subject Cluster model
@@ -1936,7 +1941,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   bool _connecting = false;
   String? _driveEmail;
   PlatformFile? _deviceFile;
-  drive.File? _driveFile;
+  String? _driveFileId;
+  String? _driveFileName;
 
   static const _allowedExt = [
     'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt'
@@ -1992,7 +1998,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     if (!mounted) return;
     setState(() {
       _driveEmail = null;
-      _driveFile = null;
+      _driveFileId = null;
+      _driveFileName = null;
     });
     await _ensureConnected();
   }
@@ -2018,6 +2025,40 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
   Future<void> _pickFromDrive() async {
     if (!await _ensureConnected() || !mounted) return;
+
+    if (kIsWeb) {
+      // Web: launch Google's own Drive Picker widget instead of an
+      // in-app list, so instructors see the real Google Drive UI.
+      final token = await GoogleDriveService.currentAccessToken();
+      if (token == null) {
+        if (mounted) {
+          _snack('Could not get a Google Drive session. Please reconnect.');
+        }
+        return;
+      }
+      DrivePickerResult? result;
+      try {
+        result = await showGoogleDrivePicker(
+          accessToken: token,
+          apiKey: GoogleDriveService.pickerApiKey,
+        );
+      } catch (e) {
+        if (mounted) _snack('Could not open Google Drive: $e');
+        return;
+      }
+      if (result != null && mounted) {
+        setState(() {
+          _driveFileId = result!.id;
+          _driveFileName = result.name;
+          if (_titleController.text.trim().isEmpty) {
+            _titleController.text = _stripExtension(result.name);
+          }
+        });
+      }
+      return;
+    }
+
+    // Non-web: fall back to the in-app Drive file list.
     final picked = await showModalBottomSheet<drive.File>(
       context: context,
       isScrollControlled: true,
@@ -2026,10 +2067,10 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     );
     if (picked != null && mounted) {
       setState(() {
-        _driveFile = picked;
+        _driveFileId = picked.id;
+        _driveFileName = picked.name;
         if (_titleController.text.trim().isEmpty && picked.name != null) {
-          _titleController.text =
-              picked.name!.replaceFirst(RegExp(r'\.[A-Za-z0-9]{1,5}$'), '');
+          _titleController.text = _stripExtension(picked.name!);
         }
       });
     }
@@ -2046,7 +2087,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       _snack('Please enter a module title.');
       return;
     }
-    if (_fromDrive && _driveFile == null) {
+    if (_fromDrive && _driveFileId == null) {
       _snack('Please choose a file from your Drive.');
       return;
     }
@@ -2062,7 +2103,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
     try {
       final result = _fromDrive
-          ? await GoogleDriveService.shareExisting(_driveFile!.id!)
+          ? await GoogleDriveService.shareExisting(_driveFileId!)
           : await GoogleDriveService.upload(
               fileName: _deviceFile!.name,
               bytes: _deviceFile!.bytes!,
@@ -2343,7 +2384,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     const indigo = Color(0xFF3949AB);
     final connected = _driveEmail != null;
     final String? pickedName =
-        _fromDrive ? _driveFile?.name : _deviceFile?.name;
+        _fromDrive ? _driveFileName : _deviceFile?.name;
     final busy = _saving || _connecting;
 
     return [
