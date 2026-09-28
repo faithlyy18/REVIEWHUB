@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive_io.dart';
 import 'package:xml/xml.dart';
 import 'dart:convert';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bold-option marker
@@ -1255,7 +1257,7 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   String _selectedSubject = '';
   String _selectedSubjectCode = '';
 
-  // NEW: teacher-controlled toggle for whether students see the correct
+  // Teacher-controlled toggle for whether students see the correct
   // answer on their Review Result screen after submitting.
   bool _showCorrectAnswers = true;
 
@@ -1277,12 +1279,13 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
       _selectedSubject = q['subject'] ?? '';
       _selectedSubjectCode = q['subjectCode'] ?? '';
 
+      // Stored in Firebase as total minutes; shown to the teacher as H:MM.
       final savedMins = (q['timeLimitMinutes'] as num?)?.toInt();
       if (savedMins != null) {
-        _timeLimitController.text = savedMins.toString();
+        _timeLimitController.text = _formatTimeLimit(savedMins);
       }
 
-      // NEW: load the saved toggle. Defaults to true so quizzes created
+      // Load the saved toggle. Defaults to true so quizzes created
       // before this feature existed keep showing correct answers as before.
       _showCorrectAnswers = q['showCorrectAnswer'] as bool? ?? true;
 
@@ -1324,6 +1327,21 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   }
 
   int get _answeredCount => _questions.where((q) => q.isAnswerSet).length;
+
+  // "2:00" -> 120, "1:30" -> 90, "0:45" -> 45. Returns null if invalid.
+  int? _parseTimeLimit(String input) {
+    final m = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(input.trim());
+    if (m == null) return null;
+    final hours = int.parse(m.group(1)!);
+    final mins = int.parse(m.group(2)!);
+    if (mins > 59) return null;
+    final total = hours * 60 + mins;
+    return total > 0 ? total : null;
+  }
+
+  // 120 -> "2:00", 90 -> "1:30", 45 -> "0:45"
+  String _formatTimeLimit(int totalMinutes) =>
+      '${totalMinutes ~/ 60}:${(totalMinutes % 60).toString().padLeft(2, '0')}';
 
   // ── Selection handlers ─────────────────────────────────────────────────────
 
@@ -1492,9 +1510,10 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
     if (_selectedYearLevel.isEmpty) { _snack('Please select a Year Level.', error: true); return; }
     if (_selectedSubject.isEmpty) { _snack('Please select a Subject.', error: true); return; }
 
-    final timeLimitMinutes = int.tryParse(_timeLimitController.text.trim());
-    if (timeLimitMinutes == null || timeLimitMinutes <= 0) {
-      _snack('Please enter a valid time limit in minutes.', error: true);
+    // Teacher types H:MM (e.g. 2:00); we store total minutes.
+    final timeLimitMinutes = _parseTimeLimit(_timeLimitController.text);
+    if (timeLimitMinutes == null) {
+      _snack('Please enter a valid time limit, e.g. 2:00 or 1:30.', error: true);
       return;
     }
 
@@ -1510,7 +1529,7 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         'subject': _selectedSubject,
         'subjectCode': _selectedSubjectCode,
         'timeLimitMinutes': timeLimitMinutes,
-        // NEW: saved so TakeQuizScreen knows whether to reveal correct
+        // Saved so TakeQuizScreen knows whether to reveal correct
         // answers on the student's Review Result screen.
         'showCorrectAnswer': _showCorrectAnswers,
         'questions': _questions.map((q) => q.toMap()).toList(),
@@ -1624,27 +1643,34 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                // ── Time Limit — free-text minutes, instructor's choice ──
+                // ── Time Limit — H:MM format (hours:minutes) ──
                 _LabeledField(
-                  label: 'Time Limit',
+                  label: 'Time Limit (hours:minutes)',
                   child: TextFormField(
                     controller: _timeLimitController,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.datetime,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'[0-9:]')),
+                      LengthLimitingTextInputFormatter(5),
+                    ],
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1A237E)),
-                    decoration: _inputDeco('Enter time limit', Icons.timer_outlined).copyWith(
-                      suffixText: 'minutes',
+                    decoration: _inputDeco('e.g. 2:00 or 1:30', Icons.timer_outlined).copyWith(
+                      suffixText: 'hrs : min',
                       suffixStyle: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.w600),
+                      helperText: '2:00 = 2 hours · 1:30 = 1 hour 30 min · 0:45 = 45 min',
+                      helperMaxLines: 2,
                     ),
                     validator: (v) {
                       if (v == null || v.trim().isEmpty) return 'Required';
-                      final n = int.tryParse(v.trim());
-                      if (n == null || n <= 0) return 'Enter a valid number of minutes';
+                      if (_parseTimeLimit(v) == null) {
+                        return 'Use H:MM format (minutes 00–59), e.g. 2:00';
+                      }
                       return null;
                     },
                   ),
                 ),
 
-                // ── NEW: Show Correct Answers toggle ───────────────────
+                // ── Show Correct Answers toggle ────────────────────────
                 const SizedBox(height: 14),
                 _LabeledField(
                   label: 'Answer Key Visibility',

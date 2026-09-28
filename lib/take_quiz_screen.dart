@@ -54,14 +54,14 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
   int _attemptCount = 0;
 
   // "time almost over" notification thresholds (in seconds).
-  // These are now computed per-quiz from whatever time limit the instructor
+  // These are computed per-quiz from whatever time limit the instructor
   // set (see _computeWarningThresholds), instead of being fixed values.
-  // That way a 3-minute quiz and a 60-minute quiz both get a meaningful
+  // That way a 3-minute quiz and a 2-hour quiz both get a meaningful
   // "almost over" alert, scaled to their own duration.
   List<int> _warningThresholds = const [];
   final Set<int> _warningsShown = {};
 
-  // NEW: whether the teacher allows students to see the correct answer
+  // Whether the teacher allows students to see the correct answer
   // on the Review Result screen. Defaults to true so quizzes created
   // before this setting existed keep behaving the way they always did.
   bool _showCorrectAnswers = true;
@@ -194,26 +194,25 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       final data = doc.data();
       final questions = List<dynamic>.from(data?['questions'] ?? []);
 
-// Shuffle so each retake has a different order
-questions.shuffle(Random());
+      // Shuffle so each retake has a different order
+      questions.shuffle(Random());
 
-for (int i = 0; i < questions.length; i++) {
-  final type = questions[i]['type'] as String? ?? 'multiple_choice';
-  if (type == 'identification' || type == 'document') {
-    _textControllers[i] = TextEditingController();
-  }
-}
+      for (int i = 0; i < questions.length; i++) {
+        final type = questions[i]['type'] as String? ?? 'multiple_choice';
+        if (type == 'identification' || type == 'document') {
+          _textControllers[i] = TextEditingController();
+        }
+      }
 
-setState(() {
-  _quizData  = data;
-  _questions = questions;
-  // NEW: read the teacher's toggle from the quiz document.
-  _showCorrectAnswers = data?['showCorrectAnswer'] as bool? ?? true;
-  _isLoading = false;
-});
+      setState(() {
+        _quizData  = data;
+        _questions = questions;
+        // Read the teacher's toggle from the quiz document.
+        _showCorrectAnswers = data?['showCorrectAnswer'] as bool? ?? true;
+        _isLoading = false;
+      });
     }
   }
-
 
   String _questionType(int index) =>
       _questions[index]['type'] as String? ?? 'multiple_choice';
@@ -272,10 +271,13 @@ setState(() {
     }
   }
 
+  // Shows H:MM:SS when an hour or more remains (e.g. 1:59:52),
+  // and MM:SS below one hour (e.g. 59:52).
   String _formatTime(int seconds) {
-    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final h = seconds ~/ 3600;
+    final m = ((seconds % 3600) ~/ 60).toString().padLeft(2, '0');
     final s = (seconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
   Future<void> _autoSubmit() async {
@@ -1249,7 +1251,7 @@ setState(() {
                                         : Colors.red.shade700,
                                   ),
                                 ),
-                                // NEW: only reveal the correct answer text
+                                // Only reveal the correct answer text
                                 // when the teacher has allowed it AND the
                                 // student got the question wrong. If the
                                 // student's own answer was already correct,

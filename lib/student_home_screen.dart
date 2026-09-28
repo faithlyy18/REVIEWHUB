@@ -629,7 +629,7 @@ class _QuizzesTab extends StatelessWidget {
                     final quizzes = allDocs.where((doc) {
                       final quiz = doc.data() as Map<String, dynamic>;
                       final isArchived = quiz['archived'] as bool? ?? false;
-                       if (isArchived) return false;  
+                      if (isArchived) return false;
                       final quizYear = quiz['yearLevel'] as String? ?? '';
                       return _matchesYearFilter(quizYear);
                     }).toList();
@@ -672,7 +672,8 @@ class _QuizzesTab extends StatelessWidget {
                           questionCount: questionCount,
                           yearLevel: yearLevel,
                           subject: subject,
-                          timeLimitMinutes: (quiz['timeLimitMinutes'] as num?)?.toInt(),
+                          timeLimitMinutes:
+                              (quiz['timeLimitMinutes'] as num?)?.toInt(),
                           teacherUid: quiz['createdBy'] as String? ?? '',
                           studentUid: studentUid,
                           studentName: studentName,
@@ -1030,7 +1031,7 @@ class _QuizCard extends StatefulWidget {
   final int questionCount;
   final String yearLevel;
   final String subject;
-  final int? timeLimitMinutes; 
+  final int? timeLimitMinutes;
   final String teacherUid;
   final String studentUid;
   final String studentName;
@@ -1042,7 +1043,7 @@ class _QuizCard extends StatefulWidget {
     required this.questionCount,
     required this.yearLevel,
     required this.subject,
-     this.timeLimitMinutes, 
+    this.timeLimitMinutes,
     required this.teacherUid,
     required this.studentUid,
     required this.studentName,
@@ -1150,9 +1151,22 @@ class _QuizCardState extends State<_QuizCard> {
     if (_requestStatus == 'approved') return _RetakeAction.retakeApproved;
     if (_requestStatus == 'pending') return _RetakeAction.pending;
     // covers null, 'denied', and 'used' (a previously-approved retake that
-    // has already been consumed)
+    // has already been consumed). After a student finishes an approved
+    // extra attempt the status becomes 'used', so this brings back the
+    // "Request Permission to Retake" button and a fresh approval is needed.
     return _RetakeAction.requestPermission;
   }
+
+  // The "Attempt X/2" chip only makes sense while the student is inside
+  // their free attempts. It is hidden:
+  //  • once the instructor approves an extra attempt (the extra attempt is
+  //    a bonus, so the old "2/2" no longer applies), and
+  //  • once the student has gone past the free attempts (so it never
+  //    shows a confusing "3/2").
+  bool get _showAttemptChip =>
+      _attemptCount > 0 &&
+      _attemptCount <= kMaxFreeAttempts &&
+      _action != _RetakeAction.retakeApproved;
 
   Future<void> _openQuiz(BuildContext context) async {
     await Navigator.push(
@@ -1163,7 +1177,7 @@ class _QuizCardState extends State<_QuizCard> {
           studentUid: widget.studentUid,
           studentName: widget.studentName,
           studentYearLevel: widget.studentYearLevel,
-          timeLimitMinutes: widget.timeLimitMinutes, 
+          timeLimitMinutes: widget.timeLimitMinutes,
         ),
       ),
     );
@@ -1199,7 +1213,7 @@ class _QuizCardState extends State<_QuizCard> {
           wasDenied
               ? 'Your previous request for "${widget.title}" was declined. '
                   'Send a new request to your instructor?'
-              : 'You\'ve used both attempts for "${widget.title}". Send a '
+              : 'You\'ve used all your attempts for "${widget.title}". Send a '
                   'request to your instructor for permission to take it again?',
         ),
         actions: [
@@ -1250,11 +1264,9 @@ class _QuizCardState extends State<_QuizCard> {
         ));
       }
     } catch (e) {
-      // IMPORTANT: this used to show only a generic "Please try again"
-      // message, which hides the real cause (most commonly a Firestore
-      // security-rules permission-denied error on the retake_requests
-      // collection). Surfacing `e` here — and printing it to the debug
-      // console — makes that failure mode visible instead of silent.
+      // Surfacing `e` here — and printing it to the debug console — makes
+      // a Firestore security-rules permission-denied error visible instead
+      // of hiding it behind a generic message.
       debugPrint('retake_requests write failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1355,7 +1367,9 @@ class _QuizCardState extends State<_QuizCard> {
                           _chip(Icons.school_rounded, widget.yearLevel),
                           if (widget.subject.isNotEmpty)
                             _chip(Icons.menu_book_rounded, widget.subject),
-                          if (_attemptCount > 0)
+                          // Hidden once an extra attempt is approved, and
+                          // never shown as "3/2" past the free attempts.
+                          if (_showAttemptChip)
                             _chip(Icons.repeat_rounded,
                                 'Attempt $_attemptCount/$kMaxFreeAttempts'),
                           if (_alreadyTaken && _prevScore != null)
@@ -1406,9 +1420,6 @@ class _QuizCardState extends State<_QuizCard> {
                 icon = _requestStatus == 'denied'
                     ? Icons.mark_email_unread_rounded
                     : Icons.lock_clock_rounded;
-                // FIX: previously read 'Request Denied — Try Again'.
-                // Now just shows 'Request Denied' when the request was
-                // declined by the instructor.
                 label = _requestStatus == 'denied'
                     ? 'Request Denied'
                     : 'Request Permission to Retake';
