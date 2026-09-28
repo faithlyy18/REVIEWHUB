@@ -211,6 +211,26 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     'All Years', '1st Year', '2nd Year', '3rd Year', '4th Year'
   ];
 
+  // NEW: maps _activeTab -> the label shown in the top bar, so the title
+  // always reflects whichever section is currently open instead of always
+  // reading "ReviewHub". Falls back to the app name for any unmapped index.
+  String get _tabTitle {
+    switch (_activeTab) {
+      case 0:
+        return 'Reviews';
+      case 1:
+        return 'Modules';
+      case 2:
+        return 'Archive';
+      case 3:
+        return 'Requests';
+      case 4:
+        return 'Overview';
+      default:
+        return 'ReviewHub';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -452,6 +472,20 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX (per request): the Create Review FAB used to be a Positioned child
+  // of the OUTER Stack — the one that also holds the full-screen background
+  // pattern — so it floated relative to the whole dark-blue screen instead
+  // of the white content card. That made it hard to see near the dark
+  // background.
+  //
+  // Now the white card and the FAB share their own inner Stack, and the FAB
+  // is Positioned relative to THAT Stack (which occupies exactly the same
+  // area the white card's margin used to reserve). Since the card has a
+  // 16px margin on each side, using bottom/right: 32 here places the FAB
+  // about 16px inside the card's own edges — so it always reads as
+  // floating on the white background, regardless of which tab is active.
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -471,83 +505,120 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                     _buildTopBar(),
                     _buildWelcomeBanner(),
                     Expanded(
-                      child: Container(
-                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.18),
-                              blurRadius: 32,
-                              offset: const Offset(0, 8),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: Container(
+                              margin:
+                                  const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.18),
+                                    blurRadius: 32,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: IndexedStack(
+                                index: _activeTab,
+                                children: [
+                                  _ReviewsTabBody(
+                                    quizStream: _quizStream,
+                                    filterYear: _filterYear,
+                                    hasFilters: _hasFilters,
+                                    yearOptions: _yearOptions,
+                                    applyFiltersAndSort:
+                                        _applyFiltersAndSort,
+                                    onYearChanged: (v) => setState(() {
+                                      _filterYear = v;
+                                    }),
+                                    onSubjectViewTap: () =>
+                                        _openSubjectViewer(context),
+                                    onClearFilters: _clearFilters,
+                                    onEdit: (quizId, quiz) => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => CreateQuizScreen(
+                                            quizId: quizId,
+                                            existingQuiz: quiz),
+                                      ),
+                                    ),
+                                    onArchive: _archiveQuiz,
+                                    onViewResults: (quizId, title) =>
+                                        Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => QuizResultsScreen(
+                                            quizId: quizId, quizTitle: title),
+                                      ),
+                                    ),
+                                  ),
+                                  const TeacherModulesScreen(),
+                                  _ArchiveTabBody(
+                                    isAdmin: _isAdmin,
+                                    archiveStream: _archiveStream,
+                                    moduleArchiveStream:
+                                        _moduleArchiveStream,
+                                    onRestore: _restoreQuiz,
+                                    onDeletePermanently:
+                                        _deleteQuizPermanently,
+                                    onViewResults: (quizId, title) =>
+                                        Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => QuizResultsScreen(
+                                            quizId: quizId, quizTitle: title),
+                                      ),
+                                    ),
+                                    onRestoreModule: _restoreModule,
+                                    onDeleteModulePermanently:
+                                        _deleteModulePermanently,
+                                  ),
+                                  // New: instructor-facing retake-request
+                                  // inbox. Always index 3, right after
+                                  // Archive.
+                                  const RetakeRequestsTab(),
+                                  // Only ever reachable when _isAdmin is
+                                  // true, since the drawer item that sets
+                                  // _activeTab = 4 only renders for admin
+                                  // accounts (see _buildDrawer). Including
+                                  // it conditionally here keeps the list
+                                  // length in sync with whatever
+                                  // _activeTab can actually be.
+                                  if (_isAdmin) const _AdminOverviewTabBody(),
+                                ],
+                              ),
                             ),
-                          ],
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: IndexedStack(
-                          index: _activeTab,
-                          children: [
-                            _ReviewsTabBody(
-                              quizStream: _quizStream,
-                              filterYear: _filterYear,
-                              hasFilters: _hasFilters,
-                              yearOptions: _yearOptions,
-                              applyFiltersAndSort: _applyFiltersAndSort,
-                              onYearChanged: (v) => setState(() {
-                                _filterYear = v;
-                              }),
-                              onSubjectViewTap: () =>
-                                  _openSubjectViewer(context),
-                              onClearFilters: _clearFilters,
-                              onEdit: (quizId, quiz) => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => CreateQuizScreen(
-                                      quizId: quizId, existingQuiz: quiz),
+                          ),
+                          // FAB now anchored to the white card's own Stack
+                          // instead of the full-screen one — see the FIX
+                          // note above build().
+                          if (_activeTab == 0)
+                            Positioned(
+                              bottom: 32,
+                              right: 32,
+                              child: FloatingActionButton.extended(
+                                heroTag: 'createReview',
+                                backgroundColor: const Color(0xFF1A237E),
+                                foregroundColor: Colors.white,
+                                elevation: 4,
+                                icon: const Icon(Icons.add_rounded),
+                                label: const Text('Create Review',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold)),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          const CreateQuizScreen()),
                                 ),
                               ),
-                              onArchive: _archiveQuiz,
-                              onViewResults: (quizId, title) =>
-                                  Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => QuizResultsScreen(
-                                      quizId: quizId, quizTitle: title),
-                                ),
-                              ),
                             ),
-                            const TeacherModulesScreen(),
-                            _ArchiveTabBody(
-                              isAdmin: _isAdmin,
-                              archiveStream: _archiveStream,
-                              moduleArchiveStream: _moduleArchiveStream,
-                              onRestore: _restoreQuiz,
-                              onDeletePermanently: _deleteQuizPermanently,
-                              onViewResults: (quizId, title) =>
-                                  Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => QuizResultsScreen(
-                                      quizId: quizId, quizTitle: title),
-                                ),
-                              ),
-                              onRestoreModule: _restoreModule,
-                              onDeleteModulePermanently:
-                                  _deleteModulePermanently,
-                            ),
-                            // New: instructor-facing retake-request inbox.
-                            // Always index 3, right after Archive.
-                            const RetakeRequestsTab(),
-                            // Only ever reachable when _isAdmin is true,
-                            // since the drawer item that sets _activeTab = 4
-                            // only renders for admin accounts (see
-                            // _buildDrawer). Including it conditionally
-                            // here keeps the list length in sync with
-                            // whatever _activeTab can actually be.
-                            if (_isAdmin) const _AdminOverviewTabBody(),
-                          ],
-                        ),
+                        ],
                       ),
                     ),
                   ],
@@ -555,24 +626,6 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
               ),
             ),
           ),
-          if (_activeTab == 0)
-            Positioned(
-              bottom: 24,
-              right: 24,
-              child: FloatingActionButton.extended(
-                heroTag: 'createReview',
-                backgroundColor: const Color(0xFF1A237E),
-                foregroundColor: Colors.white,
-                elevation: 4,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Create Review',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const CreateQuizScreen()),
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -709,10 +762,16 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     );
   }
 
-  // ── Top bar: hamburger icon (opens drawer) + logo ──────────────────────────
+  // ── Top bar: hamburger icon (opens drawer) + logo + dynamic section title ──
   // NOTE: the top-bar Logout button was removed (client request) since it
   // duplicated the Logout item already in the drawer/hamburger menu below.
   // The drawer's Logout (in _buildDrawer) is now the only way to log out.
+  //
+  // CHANGED: the title text next to the logo now reflects whichever section
+  // (Reviews / Modules / Archive / Requests / Overview) is currently open,
+  // via `_tabTitle`, instead of always reading "ReviewHub". Wrapped in an
+  // AnimatedSwitcher + Expanded so it fades between titles smoothly and
+  // still truncates instead of overflowing on narrow screens.
   Widget _buildTopBar() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 12, 16, 0),
@@ -737,16 +796,22 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                     color: Colors.white, size: 20),
               ),
               const SizedBox(width: 10),
-              const Text(
-                'ReviewHub',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Text(
+                    _tabTitle,
+                    key: ValueKey(_activeTab),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
                 ),
               ),
-              const Spacer(),
             ],
           );
         },
