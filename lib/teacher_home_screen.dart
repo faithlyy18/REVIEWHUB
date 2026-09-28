@@ -799,6 +799,13 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
               Expanded(
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 200),
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  ),
                   child: Text(
                     _tabTitle,
                     key: ValueKey(_activeTab),
