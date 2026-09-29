@@ -7,105 +7,13 @@ import 'create_quiz_screen.dart';
 import 'quiz_results_screen.dart';
 import 'modules_screen.dart';
 import 'retake_requests_tab.dart';
+import 'curriculum_repo.dart';
+import 'manage_curriculum_screen.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Curriculum data
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _Subject {
-  final String code;
-  final String description;
-  const _Subject(this.code, this.description);
-}
-
-class _YearCurriculum {
-  final String yearLabel;
-  final List<_Subject> sem1;
-  final List<_Subject> sem2;
-  const _YearCurriculum(
-      {required this.yearLabel, required this.sem1, required this.sem2});
-}
-
-const _curriculum = [
-  _YearCurriculum(
-    yearLabel: '1st Year',
-    sem1: [
-      _Subject('CRIM 1', 'Introduction to Criminology'),
-    ],
-    sem2: [
-      _Subject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
-      _Subject('LEA 1', 'Law Enforcement Organization and Administration'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '2nd Year',
-    sem1: [
-      _Subject('CA 1', 'Institutional Corrections'),
-      _Subject('CDI 1', 'Fundamentals of Investigation and Intelligence'),
-      _Subject('CLJ 2', 'Human Rights Education'),
-      _Subject('CRIM 2', 'Theories of Crime Causation'),
-      _Subject('LEA 2', 'Comparative Models in Policing'),
-    ],
-    sem2: [
-      _Subject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
-      _Subject('CFLM 1', 'Character Formation, Nationalism and Patriotism'),
-      _Subject('CLJ 3', 'Criminal Law (Book 1)'),
-      _Subject('CRIM 3', 'Human Behavior and Victimology'),
-      _Subject('FORENSIC 1', 'Forensic Photography'),
-      _Subject('FORENSIC 2', 'Personal Identification Techniques'),
-      _Subject('LEA 3', 'Introduction to Industrial Security Concepts'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '3rd Year',
-    sem1: [
-      _Subject('CA 2', 'Non-Institutional Corrections'),
-      _Subject('CDI 3', 'Specialized Crime Investigation 2 with Simulation on Interrogation and Interview'),
-      _Subject('CDI 4', 'Traffic Management and Accident Investigation with Driving'),
-      _Subject('CDI 5', 'Technical English 1 (Technical Report Writing and Presentation)'),
-      _Subject('CFLM 2', 'Character Formation with Leadership, Decision Making, Management and Administration'),
-      _Subject('CLJ 4', 'Criminal Law (Book 2)'),
-      _Subject('FORENSIC 3', 'Forensic Chemistry and Toxicology'),
-      _Subject('FORENSIC 4', 'Questioned Documents Examination'),
-      _Subject('LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
-    ],
-    sem2: [
-      _Subject('CA 3', 'Therapeutic Modalities'),
-      _Subject('CDI 6', 'Fire Protection and Arson Investigation'),
-      _Subject('CDI 7', 'Vice and Drug Education and Control'),
-      _Subject('CLJ 5', 'Evidence'),
-      _Subject('CRIM 4', 'Professional Conduct and Ethical Standards'),
-      _Subject('CRIM 5', 'Juvenile Delinquency and Juvenile Justice System'),
-      _Subject('CRIM 6', 'Dispute Resolution and Crises/Incidents Management'),
-      _Subject('CRIM 7', 'Criminological Research 1 (Research Methods with Applied Statistics)'),
-      _Subject('FORENSIC 5', 'Lie Detection Techniques'),
-      _Subject('FORENSIC 6', 'Forensic Ballistics'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '4th Year',
-    sem1: [
-      _Subject('CDI 8', 'Technical English 2 (Legal Forms)'),
-      _Subject('CDI 9', 'Introduction to Cybercrime and Environmental Laws and Protection'),
-      _Subject('CLJ 6', 'Criminal Procedure and Court Testimony'),
-      _Subject('CP 1', 'Internship (On-the-Job Training 1)'),
-      _Subject('CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
-    ],
-    sem2: [
-      _Subject('CP 2', 'Internship (On-the-Job Training 2)'),
-      _Subject('ICRIM RC', 'Criminology Refresher Course'),
-    ],
-  ),
-];
-
-List<_Subject> _getSubjects(String yearLabel, String semester) {
-  try {
-    final year = _curriculum.firstWhere((y) => y.yearLabel == yearLabel);
-    return semester == '1st Semester' ? year.sem1 : year.sem2;
-  } catch (_) {
-    return [];
-  }
-}
+// NOTE: the curriculum (year levels → semesters → subjects) is no longer
+// hardcoded here. Subjects come live from Firestore through CurriculumRepo,
+// and only the admin can change them (Manage Curriculum). This screen only
+// READS the curriculum, for the read-only "All Subjects" viewer.
 
 // Formats a Firestore Timestamp (or DateTime) into e.g. "Aug 8, 2026".
 // Returns null if the value is missing or of an unexpected type, so
@@ -211,9 +119,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     'All Years', '1st Year', '2nd Year', '3rd Year', '4th Year'
   ];
 
-  // NEW: maps _activeTab -> the label shown in the top bar, so the title
-  // always reflects whichever section is currently open instead of always
-  // reading "ReviewHub". Falls back to the app name for any unmapped index.
+  // Maps _activeTab -> the label shown in the top bar, so the title
+  // always reflects whichever section is currently open.
   String get _tabTitle {
     switch (_activeTab) {
       case 0:
@@ -472,20 +379,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // FIX (per request): the Create Review FAB used to be a Positioned child
-  // of the OUTER Stack — the one that also holds the full-screen background
-  // pattern — so it floated relative to the whole dark-blue screen instead
-  // of the white content card. That made it hard to see near the dark
-  // background.
-  //
-  // Now the white card and the FAB share their own inner Stack, and the FAB
-  // is Positioned relative to THAT Stack (which occupies exactly the same
-  // area the white card's margin used to reserve). Since the card has a
-  // 16px margin on each side, using bottom/right: 32 here places the FAB
-  // about 16px inside the card's own edges — so it always reads as
-  // floating on the white background, regardless of which tab is active.
-  // ─────────────────────────────────────────────────────────────────────────
+  // The Create Review FAB shares an inner Stack with the white card, so it
+  // is positioned relative to the card (not the full dark-blue screen).
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -559,7 +454,6 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                   ),
                                   const TeacherModulesScreen(),
                                   _ArchiveTabBody(
-                                    isAdmin: _isAdmin,
                                     archiveStream: _archiveStream,
                                     moduleArchiveStream:
                                         _moduleArchiveStream,
@@ -578,25 +472,17 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                     onDeleteModulePermanently:
                                         _deleteModulePermanently,
                                   ),
-                                  // New: instructor-facing retake-request
-                                  // inbox. Always index 3, right after
-                                  // Archive.
+                                  // Instructor-facing retake-request inbox.
+                                  // Always index 3, right after Archive.
                                   const RetakeRequestsTab(),
-                                  // Only ever reachable when _isAdmin is
-                                  // true, since the drawer item that sets
-                                  // _activeTab = 4 only renders for admin
-                                  // accounts (see _buildDrawer). Including
-                                  // it conditionally here keeps the list
-                                  // length in sync with whatever
-                                  // _activeTab can actually be.
+                                  // Only reachable when _isAdmin is true,
+                                  // since the drawer item that sets
+                                  // _activeTab = 4 only renders for admins.
                                   if (_isAdmin) const _AdminOverviewTabBody(),
                                 ],
                               ),
                             ),
                           ),
-                          // FAB now anchored to the white card's own Stack
-                          // instead of the full-screen one — see the FIX
-                          // note above build().
                           if (_activeTab == 0)
                             Positioned(
                               bottom: 32,
@@ -631,7 +517,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     );
   }
 
-  // ── Hamburger menu drawer: Reviews, Modules, Archive, Requests, (Overview) ──
+  // ── Hamburger menu drawer: Reviews, Modules, Archive, Requests, (Overview,
+  // Manage Curriculum for admins) ──
   Widget _buildDrawer() {
     Widget navItem({
       required IconData icon,
@@ -707,8 +594,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                 icon: Icons.mark_email_unread_rounded,
                 label: 'Requests',
                 index: 3),
-            // Admin-only item. Nothing changes for instructor accounts —
-            // this simply doesn't render for them.
+            // Admin-only items. Nothing changes for instructor accounts —
+            // these simply don't render for them.
             if (_isAdmin)
               navItem(
                   icon: Icons.dashboard_rounded,
@@ -719,23 +606,26 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                 padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 child: Divider(height: 1),
               ),
-              // Opens the same Add Subject sheet that used to live as a FAB
-              // on the Modules screen — now reachable from anywhere via the
-              // drawer. Admin-only, matching the old FAB's visibility rule.
+              // Opens the admin's Manage Curriculum screen (add / edit /
+              // archive / restore / delete subjects).
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 child: ListTile(
-                  leading: const Icon(Icons.bookmark_add_rounded,
+                  leading: const Icon(Icons.library_books_rounded,
                       color: Colors.grey),
                   title: const Text(
-                    'Add Subject',
+                    'Manage Curriculum',
                     style: TextStyle(fontSize: 14, color: Colors.black87),
                   ),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                   onTap: () {
                     Navigator.pop(context); // close the drawer first
-                    showAddSubjectSheet(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const ManageCurriculumScreen()),
+                    );
                   },
                 ),
               ),
@@ -763,15 +653,6 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
   }
 
   // ── Top bar: hamburger icon (opens drawer) + logo + dynamic section title ──
-  // NOTE: the top-bar Logout button was removed (client request) since it
-  // duplicated the Logout item already in the drawer/hamburger menu below.
-  // The drawer's Logout (in _buildDrawer) is now the only way to log out.
-  //
-  // CHANGED: the title text next to the logo now reflects whichever section
-  // (Reviews / Modules / Archive / Requests / Overview) is currently open,
-  // via `_tabTitle`, instead of always reading "ReviewHub". Wrapped in an
-  // AnimatedSwitcher + Expanded so it fades between titles smoothly and
-  // still truncates instead of overflowing on narrow screens.
   Widget _buildTopBar() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 12, 16, 0),
@@ -912,13 +793,62 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     );
   }
 
+  // Builds the header + subject rows for the read-only viewer from the LIVE
+  // list of active subjects (already sorted by CurriculumRepo).
+  List<Widget> _buildSubjectRows(List<Subject> all, List<String> years) {
+    final rows = <Widget>[];
+    for (final yearLabel in years) {
+      final yearSubjects =
+          all.where((s) => s.yearLevel == yearLabel).toList();
+      rows.add(Container(
+        color: const Color(0xFFE8EAF6),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 5),
+        child: Text(yearLabel,
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1A237E),
+                letterSpacing: 0.3)),
+      ));
+
+      if (yearSubjects.isEmpty) {
+        rows.add(Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Text('No subjects yet.',
+              style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+        ));
+        continue;
+      }
+
+      for (final sem in CurriculumRepo.semesters) {
+        final semSubjects =
+            yearSubjects.where((s) => s.semester == sem).toList();
+        if (semSubjects.isEmpty) continue;
+        rows.add(Container(
+          color: const Color(0xFFF0F2F8),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Text(sem,
+              style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF3949AB),
+                  letterSpacing: 0.4)),
+        ));
+        for (final s in semSubjects) {
+          rows.add(_SubjectViewRow(label: s.description, code: s.code));
+        }
+      }
+    }
+    rows.add(const SizedBox(height: 16));
+    return rows;
+  }
+
   // Read-only viewer: tapping "All Subjects" shows every subject for the
-  // currently selected year (or all 4 years if "All Years" is selected).
-  // Rows here are for viewing only — there's no tap/select behavior on
-  // them, since "All Subjects" isn't a filter.
+  // currently selected year (or all 4 years if "All Years" is selected),
+  // streamed live from Firestore. Rows are for viewing only.
   void _openSubjectViewer(BuildContext context) {
     final yearsToShow = _filterYear == 'All Years'
-        ? _curriculum.map((y) => y.yearLabel).toList()
+        ? List<String>.from(CurriculumRepo.yearLevels)
         : [_filterYear];
 
     showModalBottomSheet(
@@ -962,41 +892,34 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
             ),
             const Divider(height: 1),
             Expanded(
-              child: ListView(
-                controller: ctrl,
-                children: [
-                  for (final yearLabel in yearsToShow) ...[
-                    Container(
-                      color: const Color(0xFFE8EAF6),
-                      padding:
-                          const EdgeInsets.fromLTRB(16, 10, 16, 5),
-                      child: Text(yearLabel,
+              child: StreamBuilder<List<Subject>>(
+                stream: CurriculumRepo.streamAll(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting &&
+                      !snapshot.hasData) {
+                    return const Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF1A237E)));
+                  }
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'Could not load subjects.\n${snapshot.error}',
+                          textAlign: TextAlign.center,
                           style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1A237E),
-                              letterSpacing: 0.3)),
-                    ),
-                    for (final sem in ['1st Semester', '2nd Semester']) ...[
-                      if (_getSubjects(yearLabel, sem).isNotEmpty) ...[
-                        Container(
-                          color: const Color(0xFFF0F2F8),
-                          padding:
-                              const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                          child: Text(sem,
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF3949AB),
-                                  letterSpacing: 0.4)),
+                              color: Colors.red, fontSize: 12),
                         ),
-                        for (final s in _getSubjects(yearLabel, sem))
-                          _SubjectViewRow(label: s.description, code: s.code),
-                      ],
-                    ],
-                  ],
-                  const SizedBox(height: 16),
-                ],
+                      ),
+                    );
+                  }
+                  final all = snapshot.data ?? [];
+                  return ListView(
+                    controller: ctrl,
+                    children: _buildSubjectRows(all, yearsToShow),
+                  );
+                },
               ),
             ),
           ],
@@ -1063,8 +986,7 @@ class _ReviewsTabBody extends StatelessWidget {
             const SizedBox(width: 10),
             // "All Subjects" is not a filter — tapping it just opens a
             // read-only list of the subjects for the selected year (or
-            // all 4 years). The label itself never changes, and the
-            // subjects inside the list aren't selectable/tappable.
+            // all 4 years).
             Expanded(
               child: _StaticFilterLabel(
                 icon: Icons.menu_book_rounded,
@@ -1208,16 +1130,13 @@ class _ReviewsTabBody extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Archive Tab Body  (Reviews + Modules sub-tabs for everyone; a third
-// "Subjects" sub-tab is only added when isAdmin is true — archived
-// subjects are an Admin-only concern and must never appear for
-// instructor accounts. See ArchivedSubjectsList in modules_screen.dart,
-// which owns its own Firestore stream — no extra plumbing needed here
-// beyond conditionally dropping the widget in.)
+// Archive Tab Body  (Reviews + Modules sub-tabs)
+//
+// Archived SUBJECTS are no longer shown here — the admin restores or
+// permanently deletes them from the Archived tab of Manage Curriculum.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ArchiveTabBody extends StatelessWidget {
-  final bool isAdmin;
   final Stream<QuerySnapshot> archiveStream;
   final Stream<QuerySnapshot> moduleArchiveStream;
   final void Function(String quizId) onRestore;
@@ -1227,7 +1146,6 @@ class _ArchiveTabBody extends StatelessWidget {
   final void Function(String docId) onDeleteModulePermanently;
 
   const _ArchiveTabBody({
-    required this.isAdmin,
     required this.archiveStream,
     required this.moduleArchiveStream,
     required this.onRestore,
@@ -1239,13 +1157,8 @@ class _ArchiveTabBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Instructors get 2 sub-tabs (Reviews, Modules). Admins get a 3rd
-    // (Subjects) for managing archived subjects — that tab and its
-    // content are never built at all for non-admin accounts.
-    final tabCount = isAdmin ? 3 : 2;
-
     return DefaultTabController(
-      length: tabCount,
+      length: 2,
       child: Column(
         children: [
           Container(
@@ -1253,31 +1166,24 @@ class _ArchiveTabBody extends StatelessWidget {
               color: Color(0xFFFBE9E7),
               border: Border(bottom: BorderSide(color: Color(0xFFFFCCBC))),
             ),
-            child: TabBar(
-              labelColor: const Color(0xFFD84315),
+            child: const TabBar(
+              labelColor: Color(0xFFD84315),
               unselectedLabelColor: Color(0x80D84315),
-              indicatorColor: const Color(0xFFD84315),
+              indicatorColor: Color(0xFFD84315),
               indicatorWeight: 2.5,
-              labelStyle: const TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 13),
+              labelStyle:
+                  TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               tabs: [
-                const Tab(
+                Tab(
                   icon: Icon(Icons.quiz_rounded, size: 16),
                   text: 'Reviews',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
-                const Tab(
+                Tab(
                   icon: Icon(Icons.menu_book_rounded, size: 16),
                   text: 'Modules',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
-                // Admin-only tab.
-                if (isAdmin)
-                  const Tab(
-                    icon: Icon(Icons.bookmark_remove_rounded, size: 16),
-                    text: 'Subjects',
-                    iconMargin: EdgeInsets.only(bottom: 2),
-                  ),
               ],
             ),
           ),
@@ -1295,12 +1201,6 @@ class _ArchiveTabBody extends StatelessWidget {
                   onRestore: onRestoreModule,
                   onDeletePermanently: onDeleteModulePermanently,
                 ),
-                // Self-contained widget from modules_screen.dart — it owns
-                // its own Firestore stream (archived subjects) and its own
-                // Restore / Delete Permanently actions. Only ever built
-                // when isAdmin is true, so instructor accounts never see
-                // or load this tab.
-                if (isAdmin) const ArchivedSubjectsList(),
               ],
             ),
           ),
@@ -1948,11 +1848,8 @@ class _QuizCard extends StatelessWidget {
 //              one read-only, uploader-labeled list.
 //   - Modules: every module on the platform, same treatment.
 // Reviews and Modules are 100% read-only — no edit/archive/delete is
-// ever rendered here. Those actions only exist on each instructor's own
-// Reviews/Archive tabs. This is a UI-layer restriction; make sure your
-// Firestore security rules also only allow a document's own
-// createdBy/uploadedBy uid (not "any teacher") to update or delete it,
-// so the restriction holds even against direct API calls.
+// ever rendered here. Make sure your Firestore security rules also only
+// allow a document's own createdBy/uploadedBy uid to update or delete it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum _AdminUserFilter { all, students, instructors, admins }
@@ -1982,8 +1879,7 @@ class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
   }
 
   // 'role' is either 'student' or 'teacher'. For 'teacher', 'accountType'
-  // further distinguishes 'instructor' from 'admin' (matches the check
-  // already used to route admins in home_screen.dart).
+  // further distinguishes 'instructor' from 'admin'.
   String _accountTypeOf(Map<String, dynamic> data) {
     final role = data['role'] as String? ?? 'student';
     if (role != 'teacher') return 'student';
@@ -1992,8 +1888,6 @@ class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
   }
 
   // Opens the read-only "what has this account uploaded" monitoring sheet.
-  // Only ever called for instructor/admin rows — see _AdminUserTile's
-  // onViewUploads wiring below.
   void _showInstructorUploads(String uid, String name) {
     showModalBottomSheet(
       context: context,
@@ -2254,12 +2148,7 @@ class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
             Expanded(
               child: Builder(builder: (context) {
                 // An if/else chain (rather than a switch) so the function
-                // always, unambiguously returns a Widget — a switch over
-                // an enum inside a closure isn't always recognized by the
-                // analyzer as exhaustive, and an unmatched switch with no
-                // default silently falls through to an implicit `null`
-                // return, which is what caused the "build function
-                // returned null" crash.
+                // always, unambiguously returns a Widget.
                 if (_section == _OverviewSection.reviews) {
                   return _AllReviewsMonitorList(namesByUid: namesByUid);
                 }
@@ -2344,9 +2233,7 @@ class _AdminStatCard extends StatelessWidget {
 }
 
 // Pill-style toggle used for the Users / Reviews / Modules switcher at
-// the top of the Admin Overview tab. Visually distinct from _FilterChip
-// (rounded rectangle, fills its Expanded width) so it doesn't get
-// confused with the role filter chips shown only in the Users view.
+// the top of the Admin Overview tab.
 class _SectionTabButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -2435,11 +2322,10 @@ class _FilterChip extends StatelessWidget {
       );
 }
 
-// Now tappable for instructor/admin rows (onViewUploads != null) to open
-// the read-only uploads monitoring sheet. The tap target wraps only the
+// Tappable for instructor/admin rows (onViewUploads != null) to open the
+// read-only uploads monitoring sheet. The tap target wraps only the
 // avatar/name/badge area, kept as a sibling of the delete IconButton
-// rather than nesting them, so the delete tap isn't swallowed by the
-// row's InkWell.
+// rather than nesting them, so the delete tap isn't swallowed.
 class _AdminUserTile extends StatelessWidget {
   final String name;
   final String email;
@@ -2568,11 +2454,8 @@ class _AdminUserTile extends StatelessWidget {
 // Read-only. Opened from _AdminUserTile when the admin taps an
 // instructor or admin row in the Overview list. Shows two tabs —
 // Reviews (from 'quizzes' where createdBy == uid) and Modules (from
-// 'modules' where uploadedBy == uid) — including archived items, so the
-// admin has full visibility into what that account has published.
-// There is deliberately no edit/archive/delete action here: monitoring
-// only. Those actions still live on the account's own Reviews/Archive
-// tabs.
+// 'modules' where uploadedBy == uid) — including archived items.
+// There is deliberately no edit/archive/delete action here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _InstructorUploadsSheet extends StatelessWidget {
@@ -2797,9 +2680,7 @@ class _InstructorModulesList extends StatelessWidget {
           final aData = a.data() as Map<String, dynamic>;
           final bData = b.data() as Map<String, dynamic>;
           // Field name for module creation time isn't confirmed in the
-          // original schema (only 'archivedAt' is used elsewhere), so
-          // this checks the common alternatives and falls back to no
-          // sort key if none are present.
+          // original schema, so this checks the common alternatives.
           final aTime = aData['uploadedAt'] ?? aData['createdAt'];
           final bTime = bData['uploadedAt'] ?? bData['createdAt'];
           if (aTime == null && bTime == null) return 0;
@@ -2841,19 +2722,14 @@ class _InstructorModulesList extends StatelessWidget {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform-wide Reviews / Modules monitoring lists — the "Reviews" and
-// "Modules" sections of the Admin Overview tab. Unlike
-// _InstructorReviewsList / _InstructorModulesList above (scoped to one
-// uid, shown inside a sheet), these stream every document in the
-// collection, across every instructor, and GROUP them by uploader —
-// one collapsible card per instructor/admin, named after them, that
-// expands to show everything that account has uploaded. This is the
-// "organizer" the client asked for: content is filed under the
-// person who posted it instead of appearing as one long flat list.
+// "Modules" sections of the Admin Overview tab. They stream every document
+// in the collection, across every instructor, and GROUP them by uploader —
+// one collapsible card per instructor/admin that expands to show
+// everything that account has uploaded.
 //
 // Grouping uses the namesByUid map built once in
 // _AdminOverviewTabBodyState.build() from the users stream that's
-// already being fetched for the stat counts, so no extra reads are
-// needed per card. Read-only throughout — no edit/archive/delete.
+// already being fetched for the stat counts. Read-only throughout.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _AllReviewsMonitorList extends StatelessWidget {
@@ -3075,18 +2951,9 @@ class _AllModulesMonitorList extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Instructor Group Card — the collapsible "organizer" header. Tapping the
 // row expands/collapses the list of that instructor's uploads (passed in
-// as `children`, already-built _MonitorCard widgets). Used by both
-// _AllReviewsMonitorList and _AllModulesMonitorList above so Reviews and
-// Modules share the exact same grouping presentation, as requested.
-// Collapsed by default so the Reviews/Modules tab opens as a clean list
-// of instructor names rather than a wall of cards.
-//
-// FIX: the avatar/count accent previously reused the general navy brand
-// color (0xFF1A237E). Changed to the same teal (0xFF00695C) already used
-// elsewhere in this file for "instructor" — e.g. _AdminUserTile's
-// instructor badge and the "Instructors" stat card — so the person icon
-// here is visually consistent with the rest of the admin UI instead of
-// clashing with it.
+// as `children`, already-built _MonitorCard widgets). Collapsed by default.
+// The avatar/count accent uses the same teal (0xFF00695C) as the
+// "instructor" badge elsewhere in the admin UI.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _InstructorGroupCard extends StatefulWidget {
@@ -3193,8 +3060,7 @@ class _InstructorGroupCardState extends State<_InstructorGroupCard> {
 
 // Read-only card used both by the per-instructor uploads sheet and,
 // nested inside _InstructorGroupCard, by the platform-wide Reviews/
-// Modules sections. No actions — this is purely for the admin to see
-// what exists, not to manage it.
+// Modules sections. No actions — purely for the admin to see what exists.
 class _MonitorCard extends StatelessWidget {
   final IconData icon;
   final String title;

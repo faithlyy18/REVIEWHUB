@@ -10,9 +10,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 //   description (e.g. 'Introduction to Criminology')
 //   yearLevel   (e.g. '1st Year')
 //   semester    ('1st Semester' | '2nd Semester')
-//   order       (int, used to keep subjects in a stable, predictable order
-//                within their year/semester — same order as your old
-//                hardcoded list)
+//   order       (int, keeps subjects in a stable order within their
+//                year/semester)
+//   archived    (bool, default false — archived subjects are hidden from
+//                every picker/viewer but can be restored by an admin)
+//   archivedAt  (server timestamp, only present while archived)
+//
+// Documents created before archiving existed have no `archived` field;
+// they are treated as active.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Subject {
@@ -22,6 +27,7 @@ class Subject {
   final String yearLevel;
   final String semester;
   final int order;
+  final bool archived;
 
   const Subject({
     required this.id,
@@ -30,6 +36,7 @@ class Subject {
     required this.yearLevel,
     required this.semester,
     this.order = 0,
+    this.archived = false,
   });
 
   factory Subject.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -41,6 +48,7 @@ class Subject {
       yearLevel: (data['yearLevel'] as String?) ?? '',
       semester: (data['semester'] as String?) ?? '',
       order: (data['order'] as num?)?.toInt() ?? 0,
+      archived: (data['archived'] as bool?) ?? false,
     );
   }
 
@@ -50,16 +58,43 @@ class Subject {
         'yearLevel': yearLevel,
         'semester': semester,
         'order': order,
+        'archived': archived,
       };
+
+  /// e.g. "CRIM 1 — Introduction to Criminology"
+  String get label => '$code — $description';
+}
+
+/// Thrown by [CurriculumRepo] write methods for problems the admin can fix
+/// (empty fields, duplicate code). The message is safe to show in the UI.
+class CurriculumException implements Exception {
+  final String message;
+  const CurriculumException(this.message);
+
+  @override
+  String toString() => message;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CurriculumRepo
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Single shared access point for reading/writing subjects. Both the admin's
-// Manage Subjects screen and every subject picker/viewer in the app should
-// go through this class, so everyone always sees the same live data.
+// Single shared access point for reading/writing subjects. The admin's
+// Manage Curriculum screen and every subject picker/viewer in the app go
+// through this class, so everyone always sees the same live data.
+//
+// Streams:
+//   streamAll()        active subjects only (what pickers/viewers use)
+//   streamForYear(y)   active subjects for one year level
+//   streamArchived()   archived subjects only
+//   streamEverything() active + archived (Manage Curriculum screen)
+//
+// Sorting is done on the device (year → semester → order → code) instead of
+// with Firestore orderBy, so NO composite index is needed and older
+// documents without an `archived` field still show up.
+//
+// Writes are admin-only. The UI hides them from instructors, and you must
+// also enforce it in Firestore security rules (see the integration notes).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class CurriculumRepo {
@@ -78,29 +113,82 @@ class CurriculumRepo {
     '2nd Semester',
   ];
 
+  // ── Sorting / parsing helpers ─────────────────────────────────────────────
+
+  static int _compare(Subject a, Subject b) {
+    final y = yearLevels
+        .indexOf(a.yearLevel)
+        .compareTo(yearLevels.indexOf(b.yearLevel));
+    if (y != 0) return y;
+    final s = semesters
+        .indexOf(a.semester)
+        .compareTo(semesters.indexOf(b.semester));
+    if (s != 0) return s;
+    final o = a.order.compareTo(b.order);
+    if (o != 0) return o;
+    return a.code.toLowerCase().compareTo(b.code.toLowerCase());
+  }
+
+  static List<Subject> _parse(QuerySnapshot<Map<String, dynamic>> snap) {
+    final list = snap.docs.map(Subject.fromDoc).toList();
+    list.sort(_compare);
+    return list;
+  }
+
   // ── Live streams ─────────────────────────────────────────────────────────
 
-  /// All subjects, ordered by year, semester, then their manual order.
+  /// Every ACTIVE (non-archived) subject, in curriculum order.
   static Stream<List<Subject>> streamAll() {
-    return _col
-        .orderBy('yearLevel')
-        .orderBy('semester')
-        .orderBy('order')
-        .snapshots()
-        .map((snap) => snap.docs.map(Subject.fromDoc).toList());
+    return _col.snapshots().map(
+        (snap) => _parse(snap).where((s) => !s.archived).toList());
   }
 
-  /// Subjects for one year level only (both semesters), still live.
+  /// ACTIVE subjects for one year level (both semesters), still live.
   static Stream<List<Subject>> streamForYear(String yearLevel) {
-    return _col
-        .where('yearLevel', isEqualTo: yearLevel)
-        .orderBy('semester')
-        .orderBy('order')
-        .snapshots()
-        .map((snap) => snap.docs.map(Subject.fromDoc).toList());
+    return _col.snapshots().map((snap) => _parse(snap)
+        .where((s) => !s.archived && s.yearLevel == yearLevel)
+        .toList());
   }
 
-  // ── Writes (admin only — enforce in the UI layer / Firestore rules) ───────
+  /// ARCHIVED subjects only.
+  static Stream<List<Subject>> streamArchived() {
+    return _col
+        .snapshots()
+        .map((snap) => _parse(snap).where((s) => s.archived).toList());
+  }
+
+  /// Active AND archived subjects (for the admin's Manage Curriculum screen).
+  static Stream<List<Subject>> streamEverything() {
+    return _col.snapshots().map(_parse);
+  }
+
+  // ── Writes (admin only — enforce in the UI layer AND Firestore rules) ─────
+
+  static void _assertCodeFree(List<Subject> all, String code,
+      {String? exceptId}) {
+    final clash = all.where((s) =>
+        s.id != exceptId && s.code.trim().toLowerCase() == code.toLowerCase());
+    if (clash.isNotEmpty) {
+      final inArchive = clash.first.archived;
+      throw CurriculumException(
+        'A subject with the code "$code" already exists'
+        '${inArchive ? ' (it is in the Archived list — restore it instead)' : ''}.',
+      );
+    }
+  }
+
+  static int _nextOrder(
+      List<Subject> all, String yearLevel, String semester) {
+    var highest = -1;
+    for (final s in all) {
+      if (s.yearLevel == yearLevel &&
+          s.semester == semester &&
+          s.order > highest) {
+        highest = s.order;
+      }
+    }
+    return highest + 1;
+  }
 
   static Future<void> addSubject({
     required String code,
@@ -108,26 +196,84 @@ class CurriculumRepo {
     required String yearLevel,
     required String semester,
   }) async {
-    // Put new subjects at the end of their year/semester group.
-    final existing = await _col
-        .where('yearLevel', isEqualTo: yearLevel)
-        .where('semester', isEqualTo: semester)
-        .get();
-    final nextOrder = existing.docs.length;
+    final c = code.trim();
+    final d = description.trim();
+    if (c.isEmpty || d.isEmpty) {
+      throw const CurriculumException(
+          'Subject code and description are required.');
+    }
+
+    final all = (await _col.get()).docs.map(Subject.fromDoc).toList();
+    _assertCodeFree(all, c);
 
     await _col.add({
-      'code': code.trim(),
-      'description': description.trim(),
+      'code': c,
+      'description': d,
       'yearLevel': yearLevel,
       'semester': semester,
-      'order': nextOrder,
+      // New subjects go to the end of their year/semester group.
+      'order': _nextOrder(all, yearLevel, semester),
+      'archived': false,
     });
   }
 
+  /// Edits a subject's details. If it moves to another year/semester it is
+  /// placed at the end of that group.
+  static Future<void> editSubject({
+    required String id,
+    required String code,
+    required String description,
+    required String yearLevel,
+    required String semester,
+  }) async {
+    final c = code.trim();
+    final d = description.trim();
+    if (c.isEmpty || d.isEmpty) {
+      throw const CurriculumException(
+          'Subject code and description are required.');
+    }
+
+    final all = (await _col.get()).docs.map(Subject.fromDoc).toList();
+    _assertCodeFree(all, c, exceptId: id);
+
+    final current = all.where((s) => s.id == id);
+    final moved = current.isEmpty ||
+        current.first.yearLevel != yearLevel ||
+        current.first.semester != semester;
+
+    final update = <String, dynamic>{
+      'code': c,
+      'description': d,
+      'yearLevel': yearLevel,
+      'semester': semester,
+    };
+    if (moved) update['order'] = _nextOrder(all, yearLevel, semester);
+
+    await _col.doc(id).update(update);
+  }
+
+  /// Hides a subject from every picker/viewer without deleting anything.
+  static Future<void> archiveSubject(String id) async {
+    await _col.doc(id).update({
+      'archived': true,
+      'archivedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> restoreSubject(String id) async {
+    await _col.doc(id).update({
+      'archived': false,
+      'archivedAt': FieldValue.delete(),
+    });
+  }
+
+  /// Permanently removes a subject. The admin UI only offers this from the
+  /// Archived list, behind a confirmation.
   static Future<void> deleteSubject(String id) async {
     await _col.doc(id).delete();
   }
 
+  /// Kept for older callers. Overwrites every field from [subject].
   static Future<void> updateSubject(Subject subject) async {
     await _col.doc(subject.id).update(subject.toMap());
   }
@@ -136,9 +282,9 @@ class CurriculumRepo {
   //
   // Copies the original hardcoded curriculum into Firestore, but ONLY if the
   // 'subjects' collection is still empty. Safe to call every time the admin
-  // opens the Manage Subjects screen — after the first successful run it
-  // becomes a no-op forever, so nothing already added/deleted by the admin
-  // is ever touched or duplicated.
+  // opens Manage Curriculum — after the first successful run it becomes a
+  // no-op forever, so nothing already added/archived/deleted by the admin is
+  // ever touched or duplicated.
   // ─────────────────────────────────────────────────────────────────────────
 
   static Future<void> migrateIfEmpty() async {
@@ -156,6 +302,7 @@ class CurriculumRepo {
           'yearLevel': year.yearLabel,
           'semester': '1st Semester',
           'order': order++,
+          'archived': false,
         });
       }
       order = 0;
@@ -167,6 +314,7 @@ class CurriculumRepo {
           'yearLevel': year.yearLabel,
           'semester': '2nd Semester',
           'order': order++,
+          'archived': false,
         });
       }
     }

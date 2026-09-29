@@ -6,7 +6,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive_io.dart';
 import 'package:xml/xml.dart';
 import 'dart:convert';
-
+import 'curriculum_repo.dart';
+import 'manage_curriculum_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bold-option marker
@@ -18,99 +19,11 @@ import 'dart:convert';
 // stripped back out before the text is shown anywhere.
 const String _kBoldMarker = '\u0007';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Curriculum data
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _Subject {
-  final String code;
-  final String description;
-  const _Subject(this.code, this.description);
-}
-
-class _YearCurriculum {
-  final String yearLabel;
-  final List<_Subject> sem1;
-  final List<_Subject> sem2;
-  const _YearCurriculum({
-    required this.yearLabel,
-    required this.sem1,
-    required this.sem2,
-  });
-}
-
-const _curriculum = [
-  _YearCurriculum(
-    yearLabel: '1st Year',
-    sem1: [
-      _Subject('CRIM 1', 'Introduction to Criminology'),
-    ],
-    sem2: [
-      _Subject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
-      _Subject('LEA 1', 'Law Enforcement Organization and Administration'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '2nd Year',
-    sem1: [
-      _Subject('ADGE', 'General Chemistry (Organic)'),
-      _Subject('CA 1', 'Institutional Corrections'),
-      _Subject('CDI 1', 'Fundamentals of Investigation and Intelligence'),
-      _Subject('CLJ 2', 'Human Rights Education'),
-      _Subject('CRIM 2', 'Theories of Crime Causation'),
-      _Subject('LEA 2', 'Comparative Models in Policing'),
-    ],
-    sem2: [
-      _Subject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
-      _Subject('CFLM 1', 'Character Formation, Nationalism and Patriotism'),
-      _Subject('CLJ 3', 'Criminal Law (Book 1)'),
-      _Subject('CRIM 3', 'Human Behavior and Victimology'),
-      _Subject('FORENSIC 1', 'Forensic Photography'),
-      _Subject('FORENSIC 2', 'Personal Identification Techniques'),
-      _Subject('LEA 3', 'Introduction to Industrial Security Concepts'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '3rd Year',
-    sem1: [
-      _Subject('CA 2', 'Non-Institutional Corrections'),
-      _Subject('CDI 3', 'Specialized Crime Investigation 2 with Simulation on Interrogation and Interview'),
-      _Subject('CDI 4', 'Traffic Management and Accident Investigation with Driving'),
-      _Subject('CDI 5', 'Technical English 1 (Technical Report Writing and Presentation)'),
-      _Subject('CFLM 2', 'Character Formation with Leadership, Decision Making, Management and Administration'),
-      _Subject('CLJ 4', 'Criminal Law (Book 2)'),
-      _Subject('FORENSIC 3', 'Forensic Chemistry and Toxicology'),
-      _Subject('FORENSIC 4', 'Questioned Documents Examination'),
-      _Subject('LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
-    ],
-    sem2: [
-      _Subject('CA 3', 'Therapeutic Modalities'),
-      _Subject('CDI 6', 'Fire Protection and Arson Investigation'),
-      _Subject('CDI 7', 'Vice and Drug Education and Control'),
-      _Subject('CLJ 5', 'Evidence'),
-      _Subject('CRIM 4', 'Professional Conduct and Ethical Standards'),
-      _Subject('CRIM 5', 'Juvenile Delinquency and Juvenile Justice System'),
-      _Subject('CRIM 6', 'Dispute Resolution and Crises/Incidents Management'),
-      _Subject('CRIM 7', 'Criminological Research 1 (Research Methods with Applied Statistics)'),
-      _Subject('FORENSIC 5', 'Lie Detection Techniques'),
-      _Subject('FORENSIC 6', 'Forensic Ballistics'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '4th Year',
-    sem1: [
-      _Subject('CDI 8', 'Technical English 2 (Legal Forms)'),
-      _Subject('CDI 9', 'Introduction to Cybercrime and Environmental Laws and Protection'),
-      _Subject('CLJ 6', 'Criminal Procedure and Court Testimony'),
-      _Subject('CP 1', 'Internship (On-the-Job Training 1)'),
-      _Subject('CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
-    ],
-    sem2: [
-      _Subject('CP 2', 'Internship (On-the-Job Training 2)'),
-      _Subject('ICRIM RC', 'Criminology Refresher Course'),
-    ],
-  ),
-];
+// NOTE: the curriculum (year levels → semesters → subjects) is no longer
+// hardcoded here. Subjects now come live from Firestore through
+// CurriculumRepo, and the subject picker sheet lives in
+// manage_curriculum_screen.dart (showSubjectPicker). Only the admin can
+// change the curriculum (Manage Curriculum); instructors just pick from it.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _QuestionData — Multiple Choice only
@@ -1261,16 +1174,23 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // answer on their Review Result screen after submitting.
   bool _showCorrectAnswers = true;
 
+  // True when this account's Firestore doc has accountType == 'admin'.
+  // Only admins see the "Add Subject" / "Manage Curriculum" buttons.
+  bool _isAdmin = false;
+
   final List<_QuestionData> _questions = [];
   bool _saving = false;
-
-  static const _yearLevels = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
+
+    isCurrentUserAdmin().then((v) {
+      if (mounted) setState(() => _isAdmin = v);
+    });
+
     if (widget.isEditing) {
       final q = widget.existingQuiz!;
       _titleController.text = q['title'] ?? '';
@@ -1352,15 +1272,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         _selectedSubjectCode = '';
       });
 
-  void _onSubjectSelected(_Subject s, String semester) {
-    setState(() {
-      _selectedSubject = s.description;
-      _selectedSubjectCode = s.code;
-      _selectedSemester = semester;
-    });
-    Navigator.pop(context);
-  }
-
   // ── Question management ────────────────────────────────────────────────────
 
   void _addQuestion() => setState(() => _questions.add(_QuestionData()));
@@ -1416,65 +1327,43 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
     _snack('$filled answer${filled == 1 ? '' : 's'} applied!');
   }
 
-  // ── Bottom-sheet pickers ───────────────────────────────────────────────────
+  // ── Subject picker (live curriculum) ───────────────────────────────────────
+  //
+  // showSubjectPicker (manage_curriculum_screen.dart) streams the live,
+  // non-archived subjects for the chosen year. Instructors can only pick;
+  // admins additionally see Add Subject / Manage buttons inside the sheet.
 
-  void _openSubjectPicker() {
+  Future<void> _openSubjectPicker() async {
     if (_selectedYearLevel.isEmpty) {
       _snack('Please select a Year Level first.');
       return;
     }
-    final year = _curriculum.firstWhere(
-      (y) => y.yearLabel == _selectedYearLevel,
-      orElse: () => const _YearCurriculum(yearLabel: '', sem1: [], sem2: []),
+    final picked = await showSubjectPicker(
+      context,
+      yearLevel: _selectedYearLevel,
+      selectedCode: _selectedSubjectCode,
+      isAdmin: _isAdmin,
     );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _selectedSubject = picked.description;
+      _selectedSubjectCode = picked.code;
+      _selectedSemester = picked.semester;
+    });
+  }
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.75,
-        maxChildSize: 0.93,
-        minChildSize: 0.4,
-        builder: (_, ctrl) => Column(
-          children: [
-            _sheetHandle(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: Row(children: [
-                const Icon(Icons.menu_book_rounded, color: Color(0xFF1A237E), size: 18),
-                const SizedBox(width: 8),
-                Text('$_selectedYearLevel — Select Subject',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF1A237E))),
-              ]),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView(
-                controller: ctrl,
-                children: [
-                  if (year.sem1.isNotEmpty) const _SemHeader(label: '1st Semester'),
-                  for (final s in year.sem1)
-                    _SubjectRow(
-                      subject: s,
-                      isSelected: _selectedSubject == s.description,
-                      onTap: () => _onSubjectSelected(s, '1st Semester'),
-                    ),
-                  if (year.sem2.isNotEmpty) const _SemHeader(label: '2nd Semester'),
-                  for (final s in year.sem2)
-                    _SubjectRow(
-                      subject: s,
-                      isSelected: _selectedSubject == s.description,
-                      onTap: () => _onSubjectSelected(s, '2nd Semester'),
-                    ),
-                  const SizedBox(height: 24),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+  Future<void> _addSubject() async {
+    final saved = await showSubjectEditor(
+      context,
+      initialYear: _selectedYearLevel.isEmpty ? null : _selectedYearLevel,
+    );
+    if (saved == true && mounted) _snack('Subject added.');
+  }
+
+  void _openManageCurriculum() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ManageCurriculumScreen()),
     );
   }
 
@@ -1612,7 +1501,9 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                   child: DropdownButtonFormField<String>(
                     value: _selectedYearLevel.isEmpty ? null : _selectedYearLevel,
                     decoration: _inputDeco('Select Year Level', Icons.school_rounded),
-                    items: _yearLevels.map((y) => DropdownMenuItem(value: y, child: Text(y))).toList(),
+                    items: CurriculumRepo.yearLevels
+                        .map((y) => DropdownMenuItem(value: y, child: Text(y)))
+                        .toList(),
                     onChanged: _onYearChanged,
                     validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                   ),
@@ -1642,6 +1533,41 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                           ),
                   ),
                 ),
+
+                // ── Admin-only curriculum shortcuts ────────────────────
+                // Instructors never see these; they can only pick from the
+                // existing subjects.
+                if (_isAdmin) ...[
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _addSubject,
+                        icon: const Icon(Icons.add_rounded, size: 16),
+                        label: const Text('Add Subject'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF1A237E),
+                          side: const BorderSide(color: Color(0xFF1A237E)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _openManageCurriculum,
+                        icon: const Icon(Icons.account_tree_rounded, size: 16),
+                        label: const Text('Manage Curriculum'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF1A237E),
+                          side: const BorderSide(color: Color(0xFF1A237E)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                  ]),
+                ],
+
                 const SizedBox(height: 14),
                 // ── Time Limit — H:MM format (hours:minutes) ──
                 _LabeledField(
@@ -1860,17 +1786,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1A237E), width: 1.5)),
       );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared bottom-sheet drag handle
-// ─────────────────────────────────────────────────────────────────────────────
-
-Widget _sheetHandle() => Container(
-      margin: const EdgeInsets.only(top: 10, bottom: 4),
-      width: 40,
-      height: 4,
-      decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
-    );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _PickerField
@@ -2228,7 +2143,7 @@ class _UnifiedQuestionRow extends StatelessWidget {
 
 class BondPaperSurface extends StatelessWidget {
   final Widget child;
-  const BondPaperSurface({required this.child});
+  const BondPaperSurface({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
@@ -2323,63 +2238,5 @@ class _MiniTag extends StatelessWidget {
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF3949AB))),
-      );
-}
-
-class _SemHeader extends StatelessWidget {
-  final String label;
-  const _SemHeader({required this.label});
-
-  @override
-  Widget build(BuildContext context) => Container(
-        color: const Color(0xFFF0F2F8),
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-        child: Row(children: [
-          const Icon(Icons.calendar_view_month_rounded, size: 13, color: Color(0xFF3949AB)),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF3949AB), letterSpacing: 0.4)),
-        ]),
-      );
-}
-
-class _SubjectRow extends StatelessWidget {
-  final _Subject subject;
-  final bool isSelected;
-  final VoidCallback onTap;
-  const _SubjectRow({required this.subject, required this.isSelected, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        child: Container(
-          color: isSelected ? const Color(0xFFE8EAF6) : Colors.transparent,
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
-          child: Row(children: [
-            Container(
-              width: 72,
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-              decoration: BoxDecoration(
-                color: isSelected ? const Color(0xFF1A237E).withOpacity(0.12) : const Color(0xFFE8EAF6),
-                borderRadius: BorderRadius.circular(5),
-                border: Border.all(color: isSelected ? const Color(0xFF1A237E).withOpacity(0.4) : Colors.transparent),
-              ),
-              child: Text(subject.code,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected ? const Color(0xFF1A237E) : const Color(0xFF3949AB))),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(subject.description,
-                  style: TextStyle(
-                      fontSize: 13,
-                      color: isSelected ? const Color(0xFF1A237E) : Colors.black87,
-                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal)),
-            ),
-            if (isSelected) const Icon(Icons.check_rounded, size: 16, color: Color(0xFF1A237E)),
-          ]),
-        ),
       );
 }
