@@ -15,9 +15,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 //   archived    (bool, default false — archived subjects are hidden from
 //                every picker/viewer but can be restored by an admin)
 //   archivedAt  (server timestamp, only present while archived)
+//   isCore      (bool — true for the official BS Criminology curriculum.
+//                Core subjects can NEVER be edited, archived or deleted.)
 //
-// Documents created before archiving existed have no `archived` field;
-// they are treated as active.
+// A subject is also treated as core when its code matches one of the codes in
+// the built-in curriculum (_seedCurriculum), even if the Firestore document
+// has no `isCore` flag yet.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Subject {
@@ -29,6 +32,9 @@ class Subject {
   final int order;
   final bool archived;
 
+  /// True for the official BS Criminology curriculum (protected).
+  final bool isCore;
+
   const Subject({
     required this.id,
     required this.code,
@@ -37,18 +43,25 @@ class Subject {
     required this.semester,
     this.order = 0,
     this.archived = false,
+    this.isCore = false,
   });
 
   factory Subject.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data() ?? {};
+    final code = (data['code'] as String?) ?? '';
+    final core = (data['isCore'] as bool?) == true ||
+        CurriculumRepo._isCoreCode(code);
+    final archivedRaw = (data['archived'] as bool?) ?? false;
     return Subject(
       id: doc.id,
-      code: (data['code'] as String?) ?? '',
+      code: code,
       description: (data['description'] as String?) ?? '',
       yearLevel: (data['yearLevel'] as String?) ?? '',
       semester: (data['semester'] as String?) ?? '',
       order: (data['order'] as num?)?.toInt() ?? 0,
-      archived: (data['archived'] as bool?) ?? false,
+      // A core subject can never be archived, whatever the document says.
+      archived: core ? false : archivedRaw,
+      isCore: core,
     );
   }
 
@@ -59,6 +72,7 @@ class Subject {
         'semester': semester,
         'order': order,
         'archived': archived,
+        'isCore': isCore,
       };
 
   /// e.g. "CRIM 1 — Introduction to Criminology"
@@ -66,7 +80,8 @@ class Subject {
 }
 
 /// Thrown by [CurriculumRepo] write methods for problems the admin can fix
-/// (empty fields, duplicate code). The message is safe to show in the UI.
+/// (empty fields, duplicate code, protected subject). The message is safe to
+/// show in the UI.
 class CurriculumException implements Exception {
   final String message;
   const CurriculumException(this.message);
@@ -79,22 +94,24 @@ class CurriculumException implements Exception {
 // CurriculumRepo
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Single shared access point for reading/writing subjects. The admin's
-// Manage Curriculum screen and every subject picker/viewer in the app go
-// through this class, so everyone always sees the same live data.
+// Single shared access point for reading/writing subjects.
 //
-// Streams:
-//   streamAll()        active subjects only (what pickers/viewers use)
-//   streamForYear(y)   active subjects for one year level
-//   streamArchived()   archived subjects only
-//   streamEverything() active + archived (Manage Curriculum screen)
+// CORE SUBJECTS (official BS Criminology curriculum)
+//   • Always present: every stream merges the built-in curriculum with what is
+//     in Firestore, so the subjects show up even before any admin has opened
+//     Manage Curriculum.
+//   • Never removable: edit / archive / delete are blocked for them.
+//   • Self-healing: ensureCoreSubjects() re-creates or repairs any core
+//     subject that is missing, archived or changed in Firestore.
 //
-// Sorting is done on the device (year → semester → order → code) instead of
-// with Firestore orderBy, so NO composite index is needed and older
-// documents without an `archived` field still show up.
+// ADMIN-ADDED SUBJECTS
+//   • Stored only in Firestore, fully editable / archivable / deletable.
+//
+// Sorting is done on the device (year → semester → order → code), so NO
+// composite index is needed.
 //
 // Writes are admin-only. The UI hides them from instructors, and you must
-// also enforce it in Firestore security rules (see the integration notes).
+// also enforce it in Firestore security rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class CurriculumRepo {
@@ -113,6 +130,52 @@ class CurriculumRepo {
     '2nd Semester',
   ];
 
+  // ── Core curriculum helpers ───────────────────────────────────────────────
+
+  static String _key(String code) => code.trim().toLowerCase();
+
+  static final Set<String> _coreCodes = {
+    for (final y in _seedCurriculum)
+      for (final s in [...y.sem1, ...y.sem2]) _key(s.code),
+  };
+
+  static bool _isCoreCode(String code) => _coreCodes.contains(_key(code));
+
+  static String _coreId(String code) =>
+      'core_${code.trim().replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_')}';
+
+  /// The built-in curriculum as [Subject]s (used when Firestore lacks them).
+  static final List<Subject> _coreSeeds = _buildCoreSeeds();
+
+  static List<Subject> _buildCoreSeeds() {
+    final out = <Subject>[];
+    for (final y in _seedCurriculum) {
+      for (var i = 0; i < y.sem1.length; i++) {
+        out.add(Subject(
+          id: _coreId(y.sem1[i].code),
+          code: y.sem1[i].code,
+          description: y.sem1[i].description,
+          yearLevel: y.yearLabel,
+          semester: '1st Semester',
+          order: i,
+          isCore: true,
+        ));
+      }
+      for (var i = 0; i < y.sem2.length; i++) {
+        out.add(Subject(
+          id: _coreId(y.sem2[i].code),
+          code: y.sem2[i].code,
+          description: y.sem2[i].description,
+          yearLevel: y.yearLabel,
+          semester: '2nd Semester',
+          order: i,
+          isCore: true,
+        ));
+      }
+    }
+    return out;
+  }
+
   // ── Sorting / parsing helpers ─────────────────────────────────────────────
 
   static int _compare(Subject a, Subject b) {
@@ -129,10 +192,23 @@ class CurriculumRepo {
     return a.code.toLowerCase().compareTo(b.code.toLowerCase());
   }
 
+  /// Firestore subjects merged with the built-in core curriculum.
+  /// Core subjects missing from Firestore are supplied from the seed list.
   static List<Subject> _parse(QuerySnapshot<Map<String, dynamic>> snap) {
-    final list = snap.docs.map(Subject.fromDoc).toList();
-    list.sort(_compare);
-    return list;
+    final result = <Subject>[];
+    final seenCore = <String>{};
+
+    for (final doc in snap.docs) {
+      final s = Subject.fromDoc(doc);
+      if (s.isCore && !seenCore.add(_key(s.code))) continue; // drop duplicates
+      result.add(s);
+    }
+    for (final seed in _coreSeeds) {
+      if (!seenCore.contains(_key(seed.code))) result.add(seed);
+    }
+
+    result.sort(_compare);
+    return result;
   }
 
   // ── Live streams ─────────────────────────────────────────────────────────
@@ -150,7 +226,7 @@ class CurriculumRepo {
         .toList());
   }
 
-  /// ARCHIVED subjects only.
+  /// ARCHIVED subjects only (core subjects are never archived).
   static Stream<List<Subject>> streamArchived() {
     return _col
         .snapshots()
@@ -164,15 +240,31 @@ class CurriculumRepo {
 
   // ── Writes (admin only — enforce in the UI layer AND Firestore rules) ─────
 
+  static const String _coreMessage =
+      'This subject is part of the official BS Criminology curriculum '
+      'and cannot be edited, archived, or deleted.';
+
+  /// Throws if the document [id] is a core subject.
+  static Future<void> _assertNotCore(String id) async {
+    if (id.startsWith('core_')) throw const CurriculumException(_coreMessage);
+    final doc = await _col.doc(id).get();
+    final data = doc.data();
+    if (data == null) return;
+    final code = (data['code'] as String?) ?? '';
+    if (data['isCore'] == true || _isCoreCode(code)) {
+      throw const CurriculumException(_coreMessage);
+    }
+  }
+
   static void _assertCodeFree(List<Subject> all, String code,
       {String? exceptId}) {
-    final clash = all.where((s) =>
-        s.id != exceptId && s.code.trim().toLowerCase() == code.toLowerCase());
+    final clash = all.where(
+        (s) => s.id != exceptId && _key(s.code) == _key(code));
     if (clash.isNotEmpty) {
-      final inArchive = clash.first.archived;
+      final first = clash.first;
       throw CurriculumException(
         'A subject with the code "$code" already exists'
-        '${inArchive ? ' (it is in the Archived list — restore it instead)' : ''}.',
+        '${first.archived ? ' (it is in the Archived list — restore it instead)' : ''}.',
       );
     }
   }
@@ -190,6 +282,7 @@ class CurriculumRepo {
     return highest + 1;
   }
 
+  /// Adds an admin subject (never core).
   static Future<void> addSubject({
     required String code,
     required String description,
@@ -203,7 +296,8 @@ class CurriculumRepo {
           'Subject code and description are required.');
     }
 
-    final all = (await _col.get()).docs.map(Subject.fromDoc).toList();
+    // Includes the built-in core subjects, so a core code can't be reused.
+    final all = _parse(await _col.get());
     _assertCodeFree(all, c);
 
     await _col.add({
@@ -214,11 +308,13 @@ class CurriculumRepo {
       // New subjects go to the end of their year/semester group.
       'order': _nextOrder(all, yearLevel, semester),
       'archived': false,
+      'isCore': false,
     });
   }
 
-  /// Edits a subject's details. If it moves to another year/semester it is
-  /// placed at the end of that group.
+  /// Edits an admin subject. Core subjects are rejected.
+  /// If it moves to another year/semester it is placed at the end of that
+  /// group.
   static Future<void> editSubject({
     required String id,
     required String code,
@@ -226,6 +322,8 @@ class CurriculumRepo {
     required String yearLevel,
     required String semester,
   }) async {
+    await _assertNotCore(id);
+
     final c = code.trim();
     final d = description.trim();
     if (c.isEmpty || d.isEmpty) {
@@ -233,7 +331,7 @@ class CurriculumRepo {
           'Subject code and description are required.');
     }
 
-    final all = (await _col.get()).docs.map(Subject.fromDoc).toList();
+    final all = _parse(await _col.get());
     _assertCodeFree(all, c, exceptId: id);
 
     final current = all.where((s) => s.id == id);
@@ -252,8 +350,10 @@ class CurriculumRepo {
     await _col.doc(id).update(update);
   }
 
-  /// Hides a subject from every picker/viewer without deleting anything.
+  /// Hides an admin subject from every picker/viewer without deleting it.
+  /// Core subjects are rejected.
   static Future<void> archiveSubject(String id) async {
+    await _assertNotCore(id);
     await _col.doc(id).update({
       'archived': true,
       'archivedAt': FieldValue.serverTimestamp(),
@@ -267,65 +367,87 @@ class CurriculumRepo {
     });
   }
 
-  /// Permanently removes a subject. The admin UI only offers this from the
-  /// Archived list, behind a confirmation.
+  /// Permanently removes an admin subject. Core subjects are rejected.
   static Future<void> deleteSubject(String id) async {
+    await _assertNotCore(id);
     await _col.doc(id).delete();
   }
 
   /// Kept for older callers. Overwrites every field from [subject].
+  /// Core subjects are rejected.
   static Future<void> updateSubject(Subject subject) async {
+    await _assertNotCore(subject.id);
     await _col.doc(subject.id).update(subject.toMap());
   }
 
-  // ── One-time migration ─────────────────────────────────────────────────────
+  // ── Core curriculum maintenance ────────────────────────────────────────────
   //
-  // Copies the original hardcoded curriculum into Firestore, but ONLY if the
-  // 'subjects' collection is still empty. Safe to call every time the admin
-  // opens Manage Curriculum — after the first successful run it becomes a
-  // no-op forever, so nothing already added/archived/deleted by the admin is
-  // ever touched or duplicated.
+  // Makes sure every official BS Criminology subject exists in Firestore,
+  // flagged isCore, not archived, and with its original details. Safe to call
+  // as often as you like (only writes when something is actually wrong).
+  // Admin only — wrap in try/catch for other accounts.
   // ─────────────────────────────────────────────────────────────────────────
 
-  static Future<void> migrateIfEmpty() async {
-    final snap = await _col.limit(1).get();
-    if (snap.docs.isNotEmpty) return; // already migrated (or admin has data)
+  static Future<void> ensureCoreSubjects() async {
+    final snap = await _col.get();
+
+    final byCode = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+    for (final d in snap.docs) {
+      final code = (d.data()['code'] as String?) ?? '';
+      byCode.putIfAbsent(_key(code), () => d);
+    }
 
     final batch = FirebaseFirestore.instance.batch();
-    for (final year in _seedCurriculum) {
-      int order = 0;
-      for (final s in year.sem1) {
-        final doc = _col.doc();
-        batch.set(doc, {
-          'code': s.code,
-          'description': s.description,
-          'yearLevel': year.yearLabel,
-          'semester': '1st Semester',
-          'order': order++,
-          'archived': false,
-        });
+    var changed = false;
+
+    for (final seed in _coreSeeds) {
+      final existing = byCode[_key(seed.code)];
+      final fresh = <String, dynamic>{
+        'code': seed.code,
+        'description': seed.description,
+        'yearLevel': seed.yearLevel,
+        'semester': seed.semester,
+        'order': seed.order,
+        'archived': false,
+        'isCore': true,
+      };
+
+      if (existing == null) {
+        // Fixed id, so it can never be duplicated.
+        batch.set(_col.doc(seed.id), fresh);
+        changed = true;
+        continue;
       }
-      order = 0;
-      for (final s in year.sem2) {
-        final doc = _col.doc();
-        batch.set(doc, {
-          'code': s.code,
-          'description': s.description,
-          'yearLevel': year.yearLabel,
-          'semester': '2nd Semester',
-          'order': order++,
-          'archived': false,
+
+      final d = existing.data();
+      final intact = d['isCore'] == true &&
+          d['archived'] != true &&
+          d['description'] == seed.description &&
+          d['yearLevel'] == seed.yearLevel &&
+          d['semester'] == seed.semester &&
+          (d['order'] as num?)?.toInt() == seed.order;
+
+      if (!intact) {
+        batch.update(existing.reference, {
+          ...fresh,
+          'archivedAt': FieldValue.delete(),
         });
+        changed = true;
       }
     }
-    await batch.commit();
+
+    if (changed) await batch.commit();
   }
+
+  /// Old name, kept so existing callers still compile.
+  static Future<void> migrateIfEmpty() => ensureCoreSubjects();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Seed data — the ORIGINAL hardcoded curriculum, used once by
-// migrateIfEmpty() to populate Firestore the first time. This is not used
-// anywhere else in the app after migration.
+// Core curriculum — the official BS Criminology subjects. These are
+// permanent: they are always shown and can never be edited, archived or
+// deleted. To add more official subjects, add them here (admins can also add
+// extra subjects from the app; those stay removable).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SeedSubject {
