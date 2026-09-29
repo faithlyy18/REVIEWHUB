@@ -9,23 +9,26 @@ import 'google_drive_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Subject Cluster model
 //
-// Subjects now live in Firestore (`subjects` collection: {code, label,
-// createdAt, archived, archivedAt}) instead of a hardcoded list, so admin
-// can add/archive/restore/permanently delete them and both the Admin and
-// Instructor dashboards (which share this same screen) stay in sync
+// Clusters (CRIM, CLJ, CDI, FORENSIC, LEA, CA, ENG …) live in Firestore
+// (`subjects` collection: {code, label, createdAt, archived, archivedAt}) so
+// an admin can add/archive/restore/permanently delete them and both the Admin
+// and Instructor dashboards (which share this same screen) stay in sync
 // automatically via the streams below.
 //
-// Color/icon are NOT stored — they're derived deterministically from the
-// subject's `code` using the fixed palette below, so adding a subject only
-// ever needs a code + a name.
+// IMPORTANT: the curriculum (CurriculumRepo — numbered subjects such as
+// "CRIM 1", "CFLM 1" …) is stored in the SAME `subjects` collection, but those
+// documents always carry a `yearLevel` / `semester`. They are NOT clusters, so
+// _isClusterDoc() below filters them out — the Subject Cluster picker only
+// ever shows the main clusters.
 //
-// ARCHIVE MODEL: subjects are never hard-deleted from the "Manage Subjects"
-// list anymore. Tapping the delete icon there now archives the subject
-// (sets `archived: true`) and cascade-archives every non-archived module
-// under it, exactly mirroring how Reviews/Modules archiving already works
-// elsewhere in the app. Archived subjects show up in a separate
-// "Archived Subjects" list (see ArchivedSubjectsList below) with Restore
-// and Delete Permanently actions.
+// Color/icon are NOT stored — they're derived deterministically from the
+// cluster's `code` using the fixed palette below.
+//
+// ARCHIVE MODEL: clusters are never hard-deleted from the "Manage Subjects"
+// list. Tapping the delete icon there archives the cluster (sets
+// `archived: true`) and cascade-archives every non-archived module under it.
+// Archived clusters show up in ArchivedSubjectsList with Restore and Delete
+// Permanently actions.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Cluster {
@@ -36,12 +39,12 @@ class _Cluster {
   final IconData icon;
   // Null while the doc's serverTimestamp() write is still pending
   // acknowledgement from the server. Kept so we can sort newly-added
-  // subjects to the end client-side instead of relying on Firestore's
+  // clusters to the end client-side instead of relying on Firestore's
   // own orderBy() (see _subjectsStream below for why).
   final DateTime? createdAt;
-  // Whether this subject has been archived (soft-deleted) by an admin.
+  // Whether this cluster has been archived (soft-deleted) by an admin.
   final bool isArchived;
-  // When the subject was archived. Null if it isn't archived, or if the
+  // When the cluster was archived. Null if it isn't archived, or if the
   // archivedAt serverTimestamp() write is still pending.
   final DateTime? archivedAt;
 
@@ -89,6 +92,19 @@ Color _colorForCode(String code) =>
 IconData _iconForCode(String code) =>
     _iconPalette[code.hashCode.abs() % _iconPalette.length];
 
+/// True only for the main module clusters (CRIM, CLJ, CDI, FORENSIC, LEA, CA,
+/// ENG …).
+///
+/// The `subjects` collection is shared with the curriculum, whose numbered
+/// subjects (CRIM 1, CFLM 1, CDI 2 …) always have a `yearLevel` and
+/// `semester`. Those are individual curriculum subjects, not clusters, so they
+/// must never appear in the Subject Cluster picker, the student filter, or the
+/// archived clusters list.
+bool _isClusterDoc(QueryDocumentSnapshot doc) {
+  final data = doc.data() as Map<String, dynamic>;
+  return !data.containsKey('yearLevel') && !data.containsKey('semester');
+}
+
 _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
   final data = doc.data() as Map<String, dynamic>;
   final code = data['code'] as String? ?? '';
@@ -101,7 +117,7 @@ _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
     label: label,
     color: _colorForCode(code),
     icon: _iconForCode(code),
-    // Will be null for a split second right after a subject is added,
+    // Will be null for a split second right after a cluster is added,
     // while the serverTimestamp() write is still in flight.
     createdAt: rawCreatedAt is Timestamp ? rawCreatedAt.toDate() : null,
     isArchived: data['archived'] as bool? ?? false,
@@ -109,27 +125,28 @@ _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
   );
 }
 
-/// Live stream of every ACTIVE (non-archived) subject, ordered by creation
-/// time. Shared by the teacher/admin screen and the student screen so both
-/// stay in sync. Archived subjects are intentionally excluded here — they
-/// should never appear in subject pickers/filters, only in
-/// ArchivedSubjectsList below.
+/// Live stream of every ACTIVE (non-archived) subject cluster, ordered by
+/// creation time. Shared by the teacher/admin screen and the student screen so
+/// both stay in sync. Archived clusters are intentionally excluded here — they
+/// should never appear in pickers/filters, only in ArchivedSubjectsList below.
+///
+/// Curriculum subjects that live in the same collection (they have a
+/// yearLevel/semester) are filtered out by _isClusterDoc.
 ///
 /// IMPORTANT: this intentionally does NOT use Firestore's `.orderBy('createdAt')`
 /// on the query itself. `createdAt` is written with `FieldValue.serverTimestamp()`,
 /// and Firestore excludes documents from query results entirely while a
 /// serverTimestamp() field used in orderBy() is still pending server
-/// acknowledgement. In practice that meant a subject an admin just added
-/// could vanish from this list — sometimes for a second, sometimes longer
-/// on a slow connection — instead of showing up immediately. Sorting
-/// client-side avoids that: a pending subject (createdAt == null) is simply
-/// placed at the end of the list rather than being hidden.
+/// acknowledgement. Sorting client-side avoids that: a pending cluster
+/// (createdAt == null) is simply placed at the end of the list rather than
+/// being hidden.
 Stream<List<_Cluster>> _subjectsStream() {
   return FirebaseFirestore.instance
       .collection('subjects')
       .snapshots()
       .map((snap) {
     final clusters = snap.docs
+        .where(_isClusterDoc)
         .map(_clusterFromDoc)
         .where((c) => !c.isArchived)
         .toList();
@@ -143,14 +160,15 @@ Stream<List<_Cluster>> _subjectsStream() {
   });
 }
 
-/// Live stream of every ARCHIVED subject, most-recently-archived first.
-/// Backs ArchivedSubjectsList below.
+/// Live stream of every ARCHIVED subject cluster, most-recently-archived
+/// first. Backs ArchivedSubjectsList below.
 Stream<List<_Cluster>> _archivedSubjectsStream() {
   return FirebaseFirestore.instance
       .collection('subjects')
       .snapshots()
       .map((snap) {
     final clusters = snap.docs
+        .where(_isClusterDoc)
         .map(_clusterFromDoc)
         .where((c) => c.isArchived)
         .toList();
@@ -181,18 +199,9 @@ void showAddSubjectSheet(BuildContext context) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared "archive subject" action (admin only) — auto-archives its modules.
 //
-// This used to hard-delete the subject document. It now soft-deletes it
-// (sets `archived: true`) so the subject and its cascade-archived modules
-// can both be restored later from ArchivedSubjectsList, instead of being
-// gone forever.
-//
-// This used to be a private method on _TeacherModulesScreenState, triggered
-// by the "x" on a chip in _ClusterChipsRow. That chip row was removed from
-// the Teacher/Admin Modules screen (subjects are already listed inside "Add
-// Module", so showing them again up top was redundant/confusing per the
-// client). Pulled out to a top-level function so it can be called from
-// AddSubjectSheet's "Manage Subjects" list instead — the single place
-// admins add AND remove subjects.
+// Soft-deletes the cluster (sets `archived: true`) so the cluster and its
+// cascade-archived modules can both be restored later from
+// ArchivedSubjectsList, instead of being gone forever.
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
@@ -258,7 +267,7 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Restore an archived subject (admin only) — un-archives the subject and
+// Restore an archived cluster (admin only) — un-archives the cluster and
 // every module currently archived under its code, putting both back in
 // active use. Called from ArchivedSubjectsList below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,8 +308,8 @@ Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Permanently delete an already-archived subject (admin only) — hard-deletes
-// the subject document and every module under its code (archived or not,
+// Permanently delete an already-archived cluster (admin only) — hard-deletes
+// the cluster document and every module under its code (archived or not,
 // as a safety net). This cannot be undone. Called from
 // ArchivedSubjectsList below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -364,17 +373,10 @@ Future<void> permanentlyDeleteSubject(
 // ─────────────────────────────────────────────────────────────────────────────
 // TeacherModulesScreen (shared by Instructor + Admin accountTypes)
 //
-// NOTE: the subject filter (originally a chip row, now a hamburger-menu
-// filter — see _ClusterFilterBar below) that used to sit at the top of this
-// screen has been intentionally removed. The client felt it was
-// redundant/confusing here, since subjects are already shown and selectable
-// inside the "Add Module" sheet. The filter bar is still used on the
-// Student side (see StudentModulesScreen below), where it's the only way
-// students can filter modules by subject.
-//
-// Archiving a subject now happens from the "Manage Subjects" list inside
-// AddSubjectSheet (see archiveSubject() above and AddSubjectSheet below),
-// not from this screen.
+// NOTE: the subject filter that used to sit at the top of this screen has
+// been intentionally removed. Subjects are already shown and selectable
+// inside the "Add Module" sheet. The filter bar is still used on the Student
+// side (see StudentModulesScreen below).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TeacherModulesScreen extends StatefulWidget {
@@ -396,7 +398,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     super.initState();
     _loadAccountType();
     // Separate subscription (outside the build-time StreamBuilder) purely to
-    // detect subject changes and toast a notification for non-admin users.
+    // detect cluster changes and toast a notification for non-admin users.
     _subjectsSub = _subjectsStream().listen(_onSubjectsChanged);
   }
 
@@ -491,10 +493,6 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
 
         return Scaffold(
           backgroundColor: const Color(0xFFF4F6FB),
-          // "Add Subject" now lives in the hamburger drawer (admin only) —
-          // see teacher_home_screen.dart's drawer, which calls
-          // showAddSubjectSheet() from this file. Only "Add Module" stays
-          // here as a FAB.
           floatingActionButton: FloatingActionButton.extended(
             heroTag: 'addModule',
             backgroundColor: const Color(0xFF1A237E),
@@ -514,9 +512,6 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
             ),
           ),
           // ── Module list ─────────────────────────────────────────────
-          // No subject filter here anymore — this screen now always shows
-          // every one of the teacher's own non-archived modules. Subject
-          // selection still happens inside "Add Module".
           body: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
                 .collection('modules')
@@ -705,12 +700,9 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Subject Filter Bar (hamburger menu) — used by the Student screen only.
 //
-// FIX: previously this was a horizontally-scrolling row of subject chips
-// (_ClusterChipsRow). Per the client, it's now a single hamburger (☰)
-// button showing the current selection; tapping it opens a bottom sheet
-// listing "All" plus every subject as a tappable row, with a checkmark on
-// whichever one is currently selected. Filtering logic is unchanged — only
-// the way the subject is picked changed.
+// A single hamburger (☰) button showing the current selection; tapping it
+// opens a bottom sheet listing "All" plus every cluster as a tappable row,
+// with a checkmark on whichever one is currently selected.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ClusterFilterBar extends StatelessWidget {
@@ -761,9 +753,9 @@ class _ClusterFilterBar extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.08),
+            color: color.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withOpacity(0.3)),
+            border: Border.all(color: color.withValues(alpha: 0.3)),
           ),
           child: Row(
             children: [
@@ -791,7 +783,7 @@ class _ClusterFilterBar extends StatelessWidget {
 }
 
 // The bottom sheet opened by the hamburger icon: "All" plus one row per
-// subject, each tappable, with a checkmark on whichever is selected.
+// cluster, each tappable, with a checkmark on whichever is selected.
 class _SubjectMenuSheet extends StatelessWidget {
   final List<_Cluster> clusters;
   final String selected;
@@ -911,10 +903,12 @@ class _SubjectMenuRow extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? color.withOpacity(0.1) : color.withOpacity(0.04),
+          color: isSelected
+              ? color.withValues(alpha: 0.1)
+              : color.withValues(alpha: 0.04),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-              color: isSelected ? color : color.withOpacity(0.2),
+              color: isSelected ? color : color.withValues(alpha: 0.2),
               width: isSelected ? 1.5 : 1),
         ),
         child: Row(
@@ -923,7 +917,7 @@ class _SubjectMenuRow extends StatelessWidget {
               width: 34,
               height: 34,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
+                color: color.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(9),
               ),
               child: Icon(icon, color: color, size: 18),
@@ -1038,7 +1032,7 @@ class _ModuleCardState extends State<_ModuleCard> {
         border: Border.all(color: const Color(0xFFE8EAF6), width: 1),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF1A237E).withOpacity(0.05),
+            color: const Color(0xFF1A237E).withValues(alpha: 0.05),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1056,9 +1050,10 @@ class _ModuleCardState extends State<_ModuleCard> {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: clusterColor.withOpacity(0.1),
+                    color: clusterColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: clusterColor.withOpacity(0.25)),
+                    border: Border.all(
+                        color: clusterColor.withValues(alpha: 0.25)),
                   ),
                   child: Icon(Icons.menu_book_rounded,
                       color: clusterColor, size: 26),
@@ -1167,7 +1162,7 @@ class _ModuleCardState extends State<_ModuleCard> {
           maxWidth != null ? BoxConstraints(maxWidth: maxWidth) : null,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: (color ?? const Color(0xFF3949AB)).withOpacity(0.1),
+        color: (color ?? const Color(0xFF3949AB)).withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -1231,7 +1226,7 @@ void _showSuccessDialog(
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
                 BoxShadow(
-                  color: cluster.color.withOpacity(0.2),
+                  color: cluster.color.withValues(alpha: 0.2),
                   blurRadius: 40,
                   offset: const Offset(0, 10),
                 ),
@@ -1250,10 +1245,10 @@ void _showSuccessDialog(
                     width: 76,
                     height: 76,
                     decoration: BoxDecoration(
-                      color: cluster.color.withOpacity(0.1),
+                      color: cluster.color.withValues(alpha: 0.1),
                       shape: BoxShape.circle,
                       border: Border.all(
-                          color: cluster.color.withOpacity(0.35),
+                          color: cluster.color.withValues(alpha: 0.35),
                           width: 2.5),
                     ),
                     child: Icon(Icons.check_rounded,
@@ -1286,10 +1281,10 @@ void _showSuccessDialog(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
-                    color: cluster.color.withOpacity(0.1),
+                    color: cluster.color.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(20),
-                    border:
-                        Border.all(color: cluster.color.withOpacity(0.3)),
+                    border: Border.all(
+                        color: cluster.color.withValues(alpha: 0.3)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1329,17 +1324,12 @@ void _showSuccessDialog(
 // ─────────────────────────────────────────────────────────────────────────────
 // Add Subject Bottom Sheet (admin only)
 //
-// Public so it can be launched from anywhere via showAddSubjectSheet() above
-// — e.g. the "Add Subject" item in the hamburger drawer in
-// teacher_home_screen.dart, not just from this screen's own UI.
+// Public so it can be launched from anywhere via showAddSubjectSheet() above.
 //
-// Now doubles as "Manage Subjects": below the add form is a live list of
-// every existing ACTIVE subject with a delete button, so admins have one
-// place to both add and archive subjects (archiveSubject() auto-archives
-// that subject's modules too — see above). Archived subjects (and their
-// Restore / Delete Permanently actions) live in ArchivedSubjectsList,
-// surfaced separately (e.g. inside the Archive tab of
-// teacher_home_screen.dart).
+// Doubles as "Manage Subjects": below the add form is a live list of every
+// existing ACTIVE cluster with a delete button, so admins have one place to
+// both add and archive clusters (archiveSubject() auto-archives that
+// cluster's modules too — see above).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AddSubjectSheet extends StatefulWidget {
@@ -1400,9 +1390,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
       });
 
       // Clear the form instead of closing the sheet — admins can keep
-      // adding subjects, and the Manage Subjects list below updates live
-      // so they can see (and archive) what they just added without
-      // reopening the sheet.
+      // adding subjects, and the Manage Subjects list below updates live.
       _codeController.clear();
       _labelController.clear();
       if (mounted) _snack('Subject added.');
@@ -1420,7 +1408,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      // Cap the sheet's height so a long subject list still scrolls nicely
+      // Cap the sheet's height so a long list still scrolls nicely
       // instead of pushing the add form off-screen.
       constraints: BoxConstraints(
           maxHeight: MediaQuery.of(context).size.height * 0.85),
@@ -1529,7 +1517,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
                   backgroundColor: const Color(0xFF1A237E),
                   foregroundColor: Colors.white,
                   disabledBackgroundColor:
-                      const Color(0xFF1A237E).withOpacity(0.7),
+                      const Color(0xFF1A237E).withValues(alpha: 0.7),
                   disabledForegroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
@@ -1542,12 +1530,12 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
             const SizedBox(height: 28),
             const Divider(height: 1),
             const SizedBox(height: 18),
-            Row(
+            const Row(
               children: [
-                const Icon(Icons.tune_rounded,
+                Icon(Icons.tune_rounded,
                     color: Color(0xFF1A237E), size: 18),
-                const SizedBox(width: 8),
-                const Text('Manage Subjects',
+                SizedBox(width: 8),
+                Text('Manage Subjects',
                     style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
@@ -1644,9 +1632,9 @@ class _ManageSubjectRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: cluster.color.withOpacity(0.06),
+        color: cluster.color.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: cluster.color.withOpacity(0.25)),
+        border: Border.all(color: cluster.color.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
@@ -1654,7 +1642,7 @@ class _ManageSubjectRow extends StatelessWidget {
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-              color: cluster.color.withOpacity(0.12),
+              color: cluster.color.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(9),
             ),
             child: Icon(cluster.icon, color: cluster.color, size: 18),
@@ -1673,7 +1661,8 @@ class _ManageSubjectRow extends StatelessWidget {
                   cluster.label,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontSize: 12, color: cluster.color.withOpacity(0.75)),
+                      fontSize: 12,
+                      color: cluster.color.withValues(alpha: 0.75)),
                 ),
               ],
             ),
@@ -1683,7 +1672,7 @@ class _ManageSubjectRow extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.all(7),
               decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.08),
+                color: Colors.red.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Icon(Icons.delete_outline_rounded,
@@ -1697,10 +1686,8 @@ class _ManageSubjectRow extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArchivedSubjectsList — public widget showing every archived subject with
-// Restore and Delete Permanently actions. Drop this into any tab/screen —
-// e.g. as a third sub-tab ("Subjects") alongside Reviews and Modules inside
-// the Archive tab of teacher_home_screen.dart.
+// ArchivedSubjectsList — public widget showing every archived cluster with
+// Restore and Delete Permanently actions. Drop this into any tab/screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ArchivedSubjectsList extends StatelessWidget {
@@ -1796,7 +1783,7 @@ class _ArchivedSubjectCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFFFCCBC), width: 1.2),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFFD84315).withOpacity(0.07),
+            color: const Color(0xFFD84315).withValues(alpha: 0.07),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1828,7 +1815,8 @@ class _ArchivedSubjectCard extends StatelessWidget {
                 Text(cluster.label,
                     style: TextStyle(
                         fontSize: 13,
-                        color: const Color(0xFFBF360C).withOpacity(0.85))),
+                        color: const Color(0xFFBF360C)
+                            .withValues(alpha: 0.85))),
                 if (archivedDate != null) ...[
                   const SizedBox(height: 3),
                   Text('Archived $archivedDate',
@@ -1882,9 +1870,9 @@ class _SmallActionButton extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.08),
+            color: color.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: color.withOpacity(0.25)),
+            border: Border.all(color: color.withValues(alpha: 0.25)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1908,6 +1896,9 @@ class _SmallActionButton extends StatelessWidget {
 // so students can open it. "Open Google Drive" is just a convenience shortcut
 // (new tab/browser window) in case they need to grab the file from Drive
 // first — it plays no part in the upload itself.
+//
+// The "Subject Cluster" picker shows ONLY the main clusters (CRIM, CLJ, CDI,
+// FORENSIC, LEA, CA, ENG …) — never the numbered curriculum subjects.
 //
 // Saved fields: `fileUrl`, `driveFileId`, `fileName`, `driveOwnerEmail`.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2152,20 +2143,20 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                 color: const Color(0xFFE8EAF6),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Row(
+              child: const Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.info_outline_rounded,
+                  Icon(Icons.info_outline_rounded,
                       color: Color(0xFF1A237E), size: 16),
-                  const SizedBox(width: 8),
+                  SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       'Choose a file from this device to upload. It is saved '
                       'to your Google Drive (ReviewHub Modules folder) and '
                       'shared with students as view-only. Need to grab it '
                       'from Drive first? Use "Open Google Drive" below.',
-                      style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF1A237E)),
+                      style:
+                          TextStyle(fontSize: 12, color: Color(0xFF1A237E)),
                     ),
                   ),
                 ],
@@ -2188,7 +2179,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
             ),
             const SizedBox(height: 14),
 
-            // ── Subject Cluster ───────────────────────────────────
+            // ── Subject Cluster (main clusters only) ──────────────
             const Text('Subject Cluster',
                 style: TextStyle(
                     fontSize: 12,
@@ -2223,13 +2214,14 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 10),
                       decoration: BoxDecoration(
-                        color:
-                            isSelected ? c.color : c.color.withOpacity(0.07),
+                        color: isSelected
+                            ? c.color
+                            : c.color.withValues(alpha: 0.07),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: isSelected
                               ? c.color
-                              : c.color.withOpacity(0.3),
+                              : c.color.withValues(alpha: 0.3),
                           width: isSelected ? 2 : 1,
                         ),
                       ),
@@ -2255,7 +2247,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                                       fontSize: 10,
                                       color: isSelected
                                           ? Colors.white70
-                                          : c.color.withOpacity(0.7))),
+                                          : c.color.withValues(alpha: 0.7))),
                             ],
                           ),
                         ],
@@ -2287,7 +2279,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   backgroundColor: const Color(0xFF1A237E),
                   foregroundColor: Colors.white,
                   disabledBackgroundColor:
-                      const Color(0xFF1A237E).withOpacity(0.7),
+                      const Color(0xFF1A237E).withValues(alpha: 0.7),
                   disabledForegroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
@@ -2411,7 +2403,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       );
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Auto-dismiss progress bar widget
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2458,7 +2449,7 @@ class _AutoDismissBarState extends State<_AutoDismissBar>
           width: 160,
           child: LinearProgressIndicator(
             value: _anim.value,
-            backgroundColor: widget.color.withOpacity(0.15),
+            backgroundColor: widget.color.withValues(alpha: 0.15),
             valueColor: AlwaysStoppedAnimation(widget.color),
           ),
         ),
