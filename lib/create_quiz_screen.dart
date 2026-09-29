@@ -19,11 +19,13 @@ import 'manage_curriculum_screen.dart';
 // stripped back out before the text is shown anywhere.
 const String _kBoldMarker = '\u0007';
 
-// NOTE: the curriculum (year levels → semesters → subjects) is no longer
-// hardcoded here. Subjects now come live from Firestore through
-// CurriculumRepo, and the subject picker sheet lives in
-// manage_curriculum_screen.dart (showSubjectPicker). Only the admin can
-// change the curriculum (Manage Curriculum); instructors just pick from it.
+// NOTE: the curriculum (year levels → semesters → subjects) is not hardcoded
+// here. Subjects come live from Firestore through CurriculumRepo, and the
+// subject picker sheet lives in manage_curriculum_screen.dart
+// (showSubjectPicker). Subjects are added/removed ONLY from the admin's
+// "Manage Subjects" screen — this page just lets the user pick from the list.
+// The official BS Criminology subjects are always available, and any subject
+// the admin adds for a year level appears here automatically for that year.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _QuestionData — Multiple Choice only
@@ -477,7 +479,7 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
+                      color: Colors.white.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: const Row(
@@ -742,7 +744,7 @@ class _HowToUploadCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFE8EAF6),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF1A237E).withOpacity(0.18)),
+        border: Border.all(color: const Color(0xFF1A237E).withValues(alpha: 0.18)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -906,9 +908,9 @@ class _PreviewRow extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.04),
+        color: c.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: c.withOpacity(0.15)),
+        border: Border.all(color: c.withValues(alpha: 0.15)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -927,7 +929,7 @@ class _PreviewRow extends StatelessWidget {
             decoration: BoxDecoration(
               color: answerBg,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: answerColor.withOpacity(0.4)),
+              border: Border.all(color: answerColor.withValues(alpha: 0.4)),
             ),
             child: Text('Ans: $answerLabel',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: answerColor)),
@@ -1174,10 +1176,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // answer on their Review Result screen after submitting.
   bool _showCorrectAnswers = true;
 
-  // True when this account's Firestore doc has accountType == 'admin'.
-  // Only admins see the "Add Subject" / "Manage Curriculum" buttons.
-  bool _isAdmin = false;
-
   final List<_QuestionData> _questions = [];
   bool _saving = false;
 
@@ -1186,10 +1184,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   @override
   void initState() {
     super.initState();
-
-    isCurrentUserAdmin().then((v) {
-      if (mounted) setState(() => _isAdmin = v);
-    });
 
     if (widget.isEditing) {
       final q = widget.existingQuiz!;
@@ -1330,8 +1324,9 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // ── Subject picker (live curriculum) ───────────────────────────────────────
   //
   // showSubjectPicker (manage_curriculum_screen.dart) streams the live,
-  // non-archived subjects for the chosen year. Instructors can only pick;
-  // admins additionally see Add Subject / Manage buttons inside the sheet.
+  // non-archived subjects for the chosen year: the official BS Criminology
+  // subjects plus anything the admin added in Manage Subjects. This page can
+  // only PICK a subject — adding/removing happens in Manage Subjects.
 
   Future<void> _openSubjectPicker() async {
     if (_selectedYearLevel.isEmpty) {
@@ -1342,7 +1337,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
       context,
       yearLevel: _selectedYearLevel,
       selectedCode: _selectedSubjectCode,
-      isAdmin: _isAdmin,
     );
     if (picked == null || !mounted) return;
     setState(() {
@@ -1350,21 +1344,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
       _selectedSubjectCode = picked.code;
       _selectedSemester = picked.semester;
     });
-  }
-
-  Future<void> _addSubject() async {
-    final saved = await showSubjectEditor(
-      context,
-      initialYear: _selectedYearLevel.isEmpty ? null : _selectedYearLevel,
-    );
-    if (saved == true && mounted) _snack('Subject added.');
-  }
-
-  void _openManageCurriculum() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ManageCurriculumScreen()),
-    );
   }
 
   // ── Validation ─────────────────────────────────────────────────────────────
@@ -1534,40 +1513,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                   ),
                 ),
 
-                // ── Admin-only curriculum shortcuts ────────────────────
-                // Instructors never see these; they can only pick from the
-                // existing subjects.
-                if (_isAdmin) ...[
-                  const SizedBox(height: 10),
-                  Row(children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _addSubject,
-                        icon: const Icon(Icons.add_rounded, size: 16),
-                        label: const Text('Add Subject'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF1A237E),
-                          side: const BorderSide(color: Color(0xFF1A237E)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _openManageCurriculum,
-                        icon: const Icon(Icons.account_tree_rounded, size: 16),
-                        label: const Text('Manage Curriculum'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF1A237E),
-                          side: const BorderSide(color: Color(0xFF1A237E)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                      ),
-                    ),
-                  ]),
-                ],
-
                 const SizedBox(height: 14),
                 // ── Time Limit — H:MM format (hours:minutes) ──
                 _LabeledField(
@@ -1658,12 +1603,12 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                     end: Alignment.centerRight,
                   ),
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: [BoxShadow(color: const Color(0xFF1A237E).withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 3))],
+                  boxShadow: [BoxShadow(color: const Color(0xFF1A237E).withValues(alpha: 0.3), blurRadius: 8, offset: const Offset(0, 3))],
                 ),
                 child: Row(children: [
                   Container(
                     padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
+                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)),
                     child: const Icon(Icons.upload_rounded, color: Colors.white, size: 20),
                   ),
                   const SizedBox(width: 12),
@@ -1705,8 +1650,8 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           color: allDone
-                              ? Colors.green.withOpacity(0.25)
-                              : Colors.white.withOpacity(0.15),
+                              ? Colors.green.withValues(alpha: 0.25)
+                              : Colors.white.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1973,7 +1918,7 @@ class _UnifiedQuestionRow extends StatelessWidget {
         color: const Color(0xFFF8F9FF),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isAnswered ? const Color(0xFF1A237E).withOpacity(0.25) : Colors.grey.shade200,
+          color: isAnswered ? const Color(0xFF1A237E).withValues(alpha: 0.25) : Colors.grey.shade200,
           width: isAnswered ? 1.5 : 1,
         ),
       ),
@@ -2234,7 +2179,7 @@ class _MiniTag extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
-          color: const Color(0xFF1A237E).withOpacity(0.1),
+          color: const Color(0xFF1A237E).withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF3949AB))),

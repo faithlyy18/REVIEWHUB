@@ -2,18 +2,18 @@ import 'package:flutter/material.dart';
 import 'curriculum_repo.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ManageSubjectsScreen
+// ManageSubjectsScreen  (ADMIN — the ONLY place to add/remove subjects)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Admin-only screen for adding and deleting subjects. Reads/writes through
-// CurriculumRepo, which is backed by Firestore — so any change here shows
-// up live for every instructor (and in the quiz creation subject picker)
-// without anyone needing to refresh or reopen the app.
+// • The official BS Criminology subjects are pre-loaded, shown with a lock,
+//   and can NOT be deleted.
+// • The admin can add extra subjects for any year level / semester. They
+//   appear live in the Create Review subject picker for that year level.
+// • Admin-added subjects can be deleted (with confirmation).
 //
-// This screen itself does NOT check accountType — the caller (teacher_home
-// _screen.dart) is responsible for only showing the button/route that leads
-// here when accountType == 'admin'. Keeping the guard at the entry point
-// is simpler than duplicating the check inside every screen.
+// This screen does NOT check accountType — the caller (teacher_home_screen)
+// only shows the entry point to admins. Also protect the `subjects`
+// collection with Firestore rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ManageSubjectsScreen extends StatefulWidget {
@@ -26,30 +26,33 @@ class ManageSubjectsScreen extends StatefulWidget {
 class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
   static const Color _brand = Color(0xFF1A237E);
 
-  bool _migrating = true;
+  bool _loading = true;
   String _filterYear = CurriculumRepo.yearLevels.first;
 
   @override
   void initState() {
     super.initState();
-    _runMigration();
+    _prepare();
   }
 
-  Future<void> _runMigration() async {
+  // Makes sure every official BS Criminology subject exists in Firestore,
+  // locked and not archived. Safe to run every time.
+  Future<void> _prepare() async {
     try {
-      await CurriculumRepo.migrateIfEmpty();
+      await CurriculumRepo.ensureCoreSubjects();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not load subjects: $e')),
+          SnackBar(content: Text('Could not sync the curriculum: $e')),
         );
       }
     } finally {
-      if (mounted) setState(() => _migrating = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: error ? Colors.red.shade700 : null,
@@ -65,6 +68,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
     String semester = CurriculumRepo.semesters.first;
     final formKey = GlobalKey<FormState>();
     bool saving = false;
+    String? error;
 
     await showDialog(
       context: context,
@@ -72,7 +76,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) => Dialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Form(
               key: formKey,
@@ -80,14 +84,21 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(children: [
-                    const Icon(Icons.add_circle_rounded, color: _brand, size: 20),
-                    const SizedBox(width: 8),
-                    const Text('Add Subject',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: _brand)),
+                  const Row(children: [
+                    Icon(Icons.add_circle_rounded, color: _brand, size: 20),
+                    SizedBox(width: 8),
+                    Text('Add Subject',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: _brand)),
                   ]),
+                  const SizedBox(height: 6),
+                  Text(
+                    'It will appear in Create Review under the year level you choose.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
                   const SizedBox(height: 16),
-
                   DropdownButtonFormField<String>(
                     value: year,
                     decoration: const InputDecoration(labelText: 'Year Level'),
@@ -97,45 +108,58 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                     onChanged: (v) => setDialogState(() => year = v ?? year),
                   ),
                   const SizedBox(height: 12),
-
                   DropdownButtonFormField<String>(
                     value: semester,
                     decoration: const InputDecoration(labelText: 'Semester'),
                     items: CurriculumRepo.semesters
                         .map((s) => DropdownMenuItem(value: s, child: Text(s)))
                         .toList(),
-                    onChanged: (v) => setDialogState(() => semester = v ?? semester),
+                    onChanged: (v) =>
+                        setDialogState(() => semester = v ?? semester),
                   ),
                   const SizedBox(height: 12),
-
                   TextFormField(
                     controller: codeController,
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
                       labelText: 'Subject Code',
-                      hintText: 'e.g. CRIM 1',
+                      hintText: 'e.g. CRIM 9',
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
-
                   TextFormField(
                     controller: descController,
-                    textCapitalization: TextCapitalization.sentences,
+                    textCapitalization: TextCapitalization.words,
                     decoration: const InputDecoration(
                       labelText: 'Subject Title',
-                      hintText: 'e.g. Introduction to Criminology',
+                      hintText: 'e.g. Introduction to Forensic Science',
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
+                  if (error != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Text(error!,
+                          style: TextStyle(
+                              color: Colors.red.shade700, fontSize: 12)),
+                    ),
+                  ],
                   const SizedBox(height: 20),
-
                   Row(children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: saving ? null : () => Navigator.pop(dialogContext),
+                        onPressed:
+                            saving ? null : () => Navigator.pop(dialogContext),
                         child: const Text('Cancel'),
                       ),
                     ),
@@ -146,7 +170,10 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                             ? null
                             : () async {
                                 if (!formKey.currentState!.validate()) return;
-                                setDialogState(() => saving = true);
+                                setDialogState(() {
+                                  saving = true;
+                                  error = null;
+                                });
                                 try {
                                   await CurriculumRepo.addSubject(
                                     code: codeController.text,
@@ -157,10 +184,21 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                                   if (dialogContext.mounted) {
                                     Navigator.pop(dialogContext);
                                   }
-                                  _snack('Subject added.');
+                                  // Jump to the year the subject was added to.
+                                  if (mounted) {
+                                    setState(() => _filterYear = year);
+                                  }
+                                  _snack('Subject added to $year.');
+                                } on CurriculumException catch (e) {
+                                  setDialogState(() {
+                                    saving = false;
+                                    error = e.message;
+                                  });
                                 } catch (e) {
-                                  setDialogState(() => saving = false);
-                                  _snack('Could not add subject: $e', error: true);
+                                  setDialogState(() {
+                                    saving = false;
+                                    error = 'Could not add subject: $e';
+                                  });
                                 }
                               },
                         style: ElevatedButton.styleFrom(
@@ -190,9 +228,14 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
     descController.dispose();
   }
 
-  // ── Delete confirmation ───────────────────────────────────────────────────
+  // ── Delete confirmation (admin-added subjects only) ───────────────────────
 
   Future<void> _confirmDelete(Subject subject) async {
+    if (subject.isCore) {
+      _snack('Official curriculum subjects cannot be deleted.', error: true);
+      return;
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -201,10 +244,9 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
             style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
         content: Text(
           'Delete "${subject.code} — ${subject.description}"?\n\n'
-          'This will remove it from every instructor\'s subject list and the '
-          'quiz creation picker immediately. Existing reviews that already '
-          'used this subject keep their saved subject name — they will not '
-          'be affected or deleted.',
+          'It will disappear from the Create Review subject list right away. '
+          'Existing reviews that already used this subject keep their saved '
+          'subject name.',
         ),
         actions: [
           TextButton(
@@ -215,7 +257,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Delete'),
@@ -228,6 +271,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
       try {
         await CurriculumRepo.deleteSubject(subject.id);
         _snack('Subject deleted.');
+      } on CurriculumException catch (e) {
+        _snack(e.message, error: true);
       } catch (e) {
         _snack('Could not delete subject: $e', error: true);
       }
@@ -243,16 +288,18 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
       appBar: AppBar(
         backgroundColor: _brand,
         foregroundColor: Colors.white,
-        title: const Text('Manage Subjects', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Manage Subjects',
+            style: TextStyle(fontWeight: FontWeight.bold)),
       ),
-      body: _migrating
+      body: _loading
           ? const Center(child: CircularProgressIndicator(color: _brand))
           : Column(
               children: [
                 // Year filter tabs
                 Container(
                   color: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   child: Row(
                     children: [
                       for (final y in CurriculumRepo.yearLevels)
@@ -263,7 +310,9 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                               margin: const EdgeInsets.symmetric(horizontal: 3),
                               padding: const EdgeInsets.symmetric(vertical: 9),
                               decoration: BoxDecoration(
-                                color: _filterYear == y ? _brand : const Color(0xFFE8EAF6),
+                                color: _filterYear == y
+                                    ? _brand
+                                    : const Color(0xFFE8EAF6),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
@@ -272,7 +321,9 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                                 style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
-                                  color: _filterYear == y ? Colors.white : const Color(0xFF3949AB),
+                                  color: _filterYear == y
+                                      ? Colors.white
+                                      : const Color(0xFF3949AB),
                                 ),
                               ),
                             ),
@@ -282,6 +333,31 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                   ),
                 ),
                 const Divider(height: 1),
+
+                // Explains the lock icon
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8EAF6),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.lock_outline_rounded,
+                        size: 15, color: _brand),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Locked subjects are the official BS Criminology '
+                        'curriculum and cannot be removed. Tap "Add Subject" '
+                        'to add more for a year level.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[800]),
+                      ),
+                    ),
+                  ]),
+                ),
 
                 // Live subject list for the selected year
                 Expanded(
@@ -297,7 +373,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                         return Center(
                           child: Padding(
                             padding: const EdgeInsets.all(24),
-                            child: Text('Error loading subjects: ${snapshot.error}',
+                            child: Text(
+                                'Error loading subjects: ${snapshot.error}',
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(color: Colors.red)),
                           ),
@@ -310,21 +387,26 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.menu_book_outlined, size: 56, color: Colors.grey[300]),
+                              Icon(Icons.menu_book_outlined,
+                                  size: 56, color: Colors.grey[300]),
                               const SizedBox(height: 12),
                               Text('No subjects for $_filterYear yet.',
                                   style: TextStyle(color: Colors.grey[500])),
                               const SizedBox(height: 4),
-                              Text('Tap "+ Add Subject" to create one.',
-                                  style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+                              Text('Tap "Add Subject" to create one.',
+                                  style: TextStyle(
+                                      color: Colors.grey[400], fontSize: 12)),
                             ],
                           ),
                         );
                       }
 
-                      // Group by semester for display
-                      final sem1 = subjects.where((s) => s.semester == '1st Semester').toList();
-                      final sem2 = subjects.where((s) => s.semester == '2nd Semester').toList();
+                      final sem1 = subjects
+                          .where((s) => s.semester == '1st Semester')
+                          .toList();
+                      final sem2 = subjects
+                          .where((s) => s.semester == '2nd Semester')
+                          .toList();
 
                       return ListView(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
@@ -348,7 +430,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
         backgroundColor: _brand,
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add_rounded),
-        label: const Text('Add Subject', style: TextStyle(fontWeight: FontWeight.bold)),
+        label: const Text('Add Subject',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         onPressed: _openAddDialog,
       ),
     );
@@ -358,7 +441,10 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
         padding: const EdgeInsets.fromLTRB(6, 10, 6, 6),
         child: Text(label,
             style: const TextStyle(
-                fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF3949AB), letterSpacing: 0.4)),
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF3949AB),
+                letterSpacing: 0.4)),
       );
 
   Widget _subjectTile(Subject s) => Container(
@@ -369,7 +455,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
           border: Border.all(color: const Color(0xFFE8EAF6)),
         ),
         child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           leading: Container(
             width: 60,
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -380,15 +467,33 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
             child: Text(
               s.code,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF3949AB)),
+              style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF3949AB)),
             ),
           ),
           title: Text(s.description,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1A237E))),
-          trailing: IconButton(
-            icon: Icon(Icons.delete_outline_rounded, color: Colors.red.shade400, size: 22),
-            onPressed: () => _confirmDelete(s),
-          ),
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1A237E))),
+          // Official subjects: lock, no delete. Admin-added: delete button.
+          trailing: s.isCore
+              ? const Tooltip(
+                  message: 'Official BS Criminology subject — cannot be removed',
+                  child: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Icon(Icons.lock_outline_rounded,
+                        size: 20, color: Colors.grey),
+                  ),
+                )
+              : IconButton(
+                  tooltip: 'Delete',
+                  icon: Icon(Icons.delete_outline_rounded,
+                      color: Colors.red.shade400, size: 22),
+                  onPressed: () => _confirmDelete(s),
+                ),
         ),
       );
 }
