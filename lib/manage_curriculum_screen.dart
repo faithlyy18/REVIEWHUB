@@ -37,6 +37,10 @@ const Color _kArchive = Color(0xFFD84315);
 const Color _kArchiveBg = Color(0xFFFBE9E7);
 const Color _kArchiveBorder = Color(0xFFFFCCBC);
 
+/// Maximum width of the page content on wide screens (web / tablet / desktop).
+/// Change this to match your other dashboards.
+const double _kMaxContentWidth = 800;
+
 /// True when the signed-in account's Firestore user doc has
 /// accountType == 'admin' (same rule TeacherHomeScreen uses).
 Future<bool> isCurrentUserAdmin() async {
@@ -914,6 +918,27 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
             final archived =
                 all.where((s) => s.archived && !s.isCore).toList();
 
+            final Widget content = snap.hasError
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                          'Could not load the curriculum.\n${snap.error}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 12)),
+                    ),
+                  )
+                : !snap.hasData
+                    ? const Center(
+                        child: CircularProgressIndicator(color: _kIndigo))
+                    : TabBarView(
+                        children: [
+                          _buildActive(active),
+                          _buildArchived(archived),
+                        ],
+                      );
+
             return DefaultTabController(
               length: 2,
               child: Scaffold(
@@ -932,34 +957,34 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
                     ],
                   ),
                 ),
-                floatingActionButton: FloatingActionButton.extended(
-                  heroTag: 'addSubject',
-                  backgroundColor: _kIndigo,
-                  foregroundColor: Colors.white,
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('Add Subject',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  onPressed: _add,
-                ),
-                body: snap.hasError
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Text('Could not load the curriculum.\n${snap.error}',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  color: Colors.red, fontSize: 12)),
-                        ),
-                      )
-                    : !snap.hasData
-                        ? const Center(
-                            child: CircularProgressIndicator(color: _kIndigo))
-                        : TabBarView(
-                            children: [
-                              _buildActive(active),
-                              _buildArchived(archived),
-                            ],
+                // The content is centered and capped at _kMaxContentWidth so
+                // it matches the other dashboards on wide screens. The Add
+                // Subject button sits inside that same column.
+                body: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints:
+                        const BoxConstraints(maxWidth: _kMaxContentWidth),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(child: content),
+                        Positioned(
+                          right: 16,
+                          bottom: 16,
+                          child: FloatingActionButton.extended(
+                            heroTag: 'addSubject',
+                            backgroundColor: _kIndigo,
+                            foregroundColor: Colors.white,
+                            icon: const Icon(Icons.add_rounded),
+                            label: const Text('Add Subject',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            onPressed: _add,
                           ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             );
           },
