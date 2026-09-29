@@ -41,6 +41,10 @@ class _Cluster {
   final bool isArchived;
   final DateTime? archivedAt;
 
+  /// True for the built-in default module subjects. These are protected:
+  /// they can never be archived or deleted.
+  final bool isDefault;
+
   const _Cluster({
     required this.id,
     required this.code,
@@ -50,6 +54,7 @@ class _Cluster {
     this.createdAt,
     this.isArchived = false,
     this.archivedAt,
+    this.isDefault = false,
   });
 }
 
@@ -85,6 +90,42 @@ Color _colorForCode(String code) =>
 IconData _iconForCode(String code) =>
     _iconPalette[code.hashCode.abs() % _iconPalette.length];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFAULT MODULE SUBJECTS (protected)
+//
+// The 7 original subject clusters. They are built into the app, so they are
+// ALWAYS available in the module subject picker, never depend on Firestore,
+// and can never be archived or deleted.
+//
+// IMPORTANT: check the labels below match what you used before. Only the
+// `code` matters for existing modules; the label is just the display name.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const List<List<String>> _kDefaultModuleSubjects = [
+  ['CRIM', 'Criminology'],
+  ['CLJ', 'Criminal Law and Jurisprudence'],
+  ['CDI', 'Criminal Detection and Investigation'],
+  ['FORENSIC', 'Forensic Science'],
+  ['LEA', 'Law Enforcement Administration'],
+  ['CA', 'Correctional Administration'],
+  ['ENG', 'English'],
+];
+
+bool _isDefaultCode(String code) => _kDefaultModuleSubjects
+    .any((d) => d[0].toUpperCase() == code.trim().toUpperCase());
+
+final List<_Cluster> _defaultClusters = [
+  for (final d in _kDefaultModuleSubjects)
+    _Cluster(
+      id: 'default_${d[0]}',
+      code: d[0],
+      label: d[1],
+      color: _colorForCode(d[0]),
+      icon: _iconForCode(d[0]),
+      isDefault: true,
+    ),
+];
+
 _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
   final data = doc.data() as Map<String, dynamic>;
   final code = data['code'] as String? ?? '';
@@ -111,15 +152,19 @@ Stream<List<_Cluster>> _subjectsStream() {
       .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    final clusters =
-        snap.docs.map(_clusterFromDoc).where((c) => !c.isArchived).toList();
-    clusters.sort((a, b) {
+    // Subjects added later (a stored doc that reuses a default code is ignored).
+    final added = snap.docs
+        .map(_clusterFromDoc)
+        .where((c) => !c.isArchived && !_isDefaultCode(c.code))
+        .toList();
+    added.sort((a, b) {
       if (a.createdAt == null && b.createdAt == null) return 0;
       if (a.createdAt == null) return 1;
       if (b.createdAt == null) return -1;
       return a.createdAt!.compareTo(b.createdAt!);
     });
-    return clusters;
+    // The 7 defaults always come first and are always present.
+    return [..._defaultClusters, ...added];
   });
 }
 
@@ -129,8 +174,10 @@ Stream<List<_Cluster>> _archivedSubjectsStream() {
       .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    final clusters =
-        snap.docs.map(_clusterFromDoc).where((c) => c.isArchived).toList();
+    final clusters = snap.docs
+        .map(_clusterFromDoc)
+        .where((c) => c.isArchived && !_isDefaultCode(c.code))
+        .toList();
     clusters.sort((a, b) {
       if (a.archivedAt == null && b.archivedAt == null) return 0;
       if (a.archivedAt == null) return 1;
@@ -159,6 +206,11 @@ void showAddSubjectSheet(BuildContext context) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
+  if (cluster.isDefault) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Default subjects cannot be archived or deleted.')));
+    return;
+  }
   final confirm = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -603,6 +655,8 @@ class _ManageModuleSubjectsScreenState
       for (final doc in old.docs) {
         final d = doc.data();
         if (d.containsKey('yearLevel') || d.containsKey('semester')) continue;
+        // Defaults are built into the app; no need to move them.
+        if (_isDefaultCode((d['code'] as String?) ?? '')) continue;
         batch.set(fs.collection(_kModuleSubjectsCol).doc(doc.id), d);
         batch.delete(doc.reference);
         n++;
@@ -688,8 +742,10 @@ class _ManageModuleSubjectsScreenState
                           Expanded(
                             child: Text(
                               'These subjects are used when uploading modules. '
-                              'Archiving a subject also archives its modules; '
-                              'restoring it brings them back.',
+                              'Subjects with a lock are the 7 default subjects '
+                              'and cannot be archived. Subjects you add can be '
+                              'archived (this also archives their modules) and '
+                              'restored later.',
                               style: TextStyle(
                                   fontSize: 12, color: Color(0xFF1A237E)),
                             ),
@@ -1483,6 +1539,11 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 
     setState(() => _saving = true);
     try {
+      if (_isDefaultCode(code)) {
+        _snack('"$code" is already a default subject.');
+        return;
+      }
+
       final existing = await FirebaseFirestore.instance
           .collection(_kModuleSubjectsCol)
           .where('code', isEqualTo: code)
@@ -1715,7 +1776,17 @@ class _ManageSubjectRow extends StatelessWidget {
               ],
             ),
           ),
-          Tooltip(
+          if (cluster.isDefault)
+            const Tooltip(
+              message: 'Default subject: cannot be archived or deleted',
+              child: Padding(
+                padding: EdgeInsets.all(7),
+                child: Icon(Icons.lock_outline_rounded,
+                    size: 18, color: Colors.grey),
+              ),
+            )
+          else
+            Tooltip(
             message: 'Archive',
             child: GestureDetector(
               onTap: onArchive,
