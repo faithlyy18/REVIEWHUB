@@ -7,45 +7,38 @@ import 'package:file_picker/file_picker.dart';
 import 'google_drive_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Subject Cluster model
+// MODULE SUBJECTS (clusters)
 //
-// Clusters (CRIM, CLJ, CDI, FORENSIC, LEA, CA, ENG …) live in Firestore
-// (`subjects` collection: {code, label, createdAt, archived, archivedAt}) so
-// an admin can add/archive/restore/permanently delete them and both the Admin
-// and Instructor dashboards (which share this same screen) stay in sync
-// automatically via the streams below.
+// Module subjects (CRIM, CLJ, CDI, FORENSIC, LEA, CA, ENG …) now live in their
+// OWN Firestore collection: `moduleSubjects`
+//   {code, label, createdAt, archived, archivedAt}
 //
-// IMPORTANT: the curriculum (CurriculumRepo — numbered subjects such as
-// "CRIM 1", "CFLM 1" …) is stored in the SAME `subjects` collection, but those
-// documents always carry a `yearLevel` / `semester`. They are NOT clusters, so
-// _isClusterDoc() below filters them out — the Subject Cluster picker only
-// ever shows the main clusters.
+// The curriculum (CurriculumRepo, numbered subjects such as "CRIM 1") stays in
+// the `subjects` collection. The two features are completely separate:
+//   • Manage Curriculum      -> `subjects`        (curriculum_repo.dart)
+//   • Modules > Manage Subjects -> `moduleSubjects` (this file)
 //
-// Color/icon are NOT stored — they're derived deterministically from the
-// cluster's `code` using the fixed palette below.
+// Modules keep referencing their subject through `cluster: <code>`, so
+// existing modules are unaffected.
 //
-// ARCHIVE MODEL: clusters are never hard-deleted from the "Manage Subjects"
-// list. Tapping the delete icon there archives the cluster (sets
-// `archived: true`) and cascade-archives every non-archived module under it.
-// Archived clusters show up in ArchivedSubjectsList with Restore and Delete
-// Permanently actions.
+// Color/icon are NOT stored — they're derived from the cluster's `code`.
+//
+// ARCHIVE MODEL: module subjects are never hard-deleted from the active list.
+// Archiving sets `archived: true` and cascade-archives every active module
+// under it. Archived subjects appear in the Archived tab with Restore (and,
+// for admins, Delete Permanently).
 // ─────────────────────────────────────────────────────────────────────────────
 
+const String _kModuleSubjectsCol = 'moduleSubjects';
+
 class _Cluster {
-  final String id; // Firestore doc id ('' for the synthetic "All" cluster)
+  final String id; // Firestore doc id
   final String code;
   final String label;
   final Color color;
   final IconData icon;
-  // Null while the doc's serverTimestamp() write is still pending
-  // acknowledgement from the server. Kept so we can sort newly-added
-  // clusters to the end client-side instead of relying on Firestore's
-  // own orderBy() (see _subjectsStream below for why).
   final DateTime? createdAt;
-  // Whether this cluster has been archived (soft-deleted) by an admin.
   final bool isArchived;
-  // When the cluster was archived. Null if it isn't archived, or if the
-  // archivedAt serverTimestamp() write is still pending.
   final DateTime? archivedAt;
 
   const _Cluster({
@@ -92,19 +85,6 @@ Color _colorForCode(String code) =>
 IconData _iconForCode(String code) =>
     _iconPalette[code.hashCode.abs() % _iconPalette.length];
 
-/// True only for the main module clusters (CRIM, CLJ, CDI, FORENSIC, LEA, CA,
-/// ENG …).
-///
-/// The `subjects` collection is shared with the curriculum, whose numbered
-/// subjects (CRIM 1, CFLM 1, CDI 2 …) always have a `yearLevel` and
-/// `semester`. Those are individual curriculum subjects, not clusters, so they
-/// must never appear in the Subject Cluster picker, the student filter, or the
-/// archived clusters list.
-bool _isClusterDoc(QueryDocumentSnapshot doc) {
-  final data = doc.data() as Map<String, dynamic>;
-  return !data.containsKey('yearLevel') && !data.containsKey('semester');
-}
-
 _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
   final data = doc.data() as Map<String, dynamic>;
   final code = data['code'] as String? ?? '';
@@ -117,42 +97,25 @@ _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
     label: label,
     color: _colorForCode(code),
     icon: _iconForCode(code),
-    // Will be null for a split second right after a cluster is added,
-    // while the serverTimestamp() write is still in flight.
     createdAt: rawCreatedAt is Timestamp ? rawCreatedAt.toDate() : null,
     isArchived: data['archived'] as bool? ?? false,
     archivedAt: rawArchivedAt is Timestamp ? rawArchivedAt.toDate() : null,
   );
 }
 
-/// Live stream of every ACTIVE (non-archived) subject cluster, ordered by
-/// creation time. Shared by the teacher/admin screen and the student screen so
-/// both stay in sync. Archived clusters are intentionally excluded here — they
-/// should never appear in pickers/filters, only in ArchivedSubjectsList below.
-///
-/// Curriculum subjects that live in the same collection (they have a
-/// yearLevel/semester) are filtered out by _isClusterDoc.
-///
-/// IMPORTANT: this intentionally does NOT use Firestore's `.orderBy('createdAt')`
-/// on the query itself. `createdAt` is written with `FieldValue.serverTimestamp()`,
-/// and Firestore excludes documents from query results entirely while a
-/// serverTimestamp() field used in orderBy() is still pending server
-/// acknowledgement. Sorting client-side avoids that: a pending cluster
-/// (createdAt == null) is simply placed at the end of the list rather than
-/// being hidden.
+/// Live stream of every ACTIVE (non-archived) module subject, ordered by
+/// creation time. Sorted client-side so a pending serverTimestamp() write
+/// (createdAt == null) is placed last instead of being hidden by Firestore.
 Stream<List<_Cluster>> _subjectsStream() {
   return FirebaseFirestore.instance
-      .collection('subjects')
+      .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    final clusters = snap.docs
-        .where(_isClusterDoc)
-        .map(_clusterFromDoc)
-        .where((c) => !c.isArchived)
-        .toList();
+    final clusters =
+        snap.docs.map(_clusterFromDoc).where((c) => !c.isArchived).toList();
     clusters.sort((a, b) {
       if (a.createdAt == null && b.createdAt == null) return 0;
-      if (a.createdAt == null) return 1; // pending write -> goes last
+      if (a.createdAt == null) return 1;
       if (b.createdAt == null) return -1;
       return a.createdAt!.compareTo(b.createdAt!);
     });
@@ -160,31 +123,26 @@ Stream<List<_Cluster>> _subjectsStream() {
   });
 }
 
-/// Live stream of every ARCHIVED subject cluster, most-recently-archived
-/// first. Backs ArchivedSubjectsList below.
+/// Live stream of every ARCHIVED module subject, newest archived first.
 Stream<List<_Cluster>> _archivedSubjectsStream() {
   return FirebaseFirestore.instance
-      .collection('subjects')
+      .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    final clusters = snap.docs
-        .where(_isClusterDoc)
-        .map(_clusterFromDoc)
-        .where((c) => c.isArchived)
-        .toList();
+    final clusters =
+        snap.docs.map(_clusterFromDoc).where((c) => c.isArchived).toList();
     clusters.sort((a, b) {
       if (a.archivedAt == null && b.archivedAt == null) return 0;
-      if (a.archivedAt == null) return 1; // pending write -> goes last
+      if (a.archivedAt == null) return 1;
       if (b.archivedAt == null) return -1;
-      return b.archivedAt!.compareTo(a.archivedAt!); // newest first
+      return b.archivedAt!.compareTo(a.archivedAt!);
     });
     return clusters;
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public helper: open the Add Subject sheet from anywhere (e.g. the
-// hamburger drawer in teacher_home_screen.dart), not just from this screen.
+// Public helper: open the Add Subject sheet from anywhere.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void showAddSubjectSheet(BuildContext context) {
@@ -197,11 +155,7 @@ void showAddSubjectSheet(BuildContext context) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared "archive subject" action (admin only) — auto-archives its modules.
-//
-// Soft-deletes the cluster (sets `archived: true`) so the cluster and its
-// cascade-archived modules can both be restored later from
-// ArchivedSubjectsList, instead of being gone forever.
+// Archive a module subject — auto-archives its modules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
@@ -209,10 +163,11 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
     context: context,
     builder: (ctx) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: const Text('Delete Subject',
-          style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+      title: const Text('Archive Subject',
+          style: TextStyle(
+              color: Color(0xFFD84315), fontWeight: FontWeight.bold)),
       content: Text(
-          'This will archive "${cluster.label}" (${cluster.code}) and automatically archive any modules under it. You can restore both later from Archived Subjects.'),
+          'This will archive "${cluster.label}" (${cluster.code}) and automatically archive any modules under it. You can restore both later from the Archived tab.'),
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -220,12 +175,12 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
                 const Text('Cancel', style: TextStyle(color: Colors.grey))),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
+              backgroundColor: const Color(0xFFD84315),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8))),
           onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Archive & Archive Modules'),
+          child: const Text('Archive'),
         ),
       ],
     ),
@@ -247,7 +202,7 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
         'archivedAt': FieldValue.serverTimestamp(),
       });
     }
-    batch.update(firestore.collection('subjects').doc(cluster.id), {
+    batch.update(firestore.collection(_kModuleSubjectsCol).doc(cluster.id), {
       'archived': true,
       'archivedAt': FieldValue.serverTimestamp(),
     });
@@ -267,9 +222,7 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Restore an archived cluster (admin only) — un-archives the cluster and
-// every module currently archived under its code, putting both back in
-// active use. Called from ArchivedSubjectsList below.
+// Restore an archived module subject — also restores its archived modules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
@@ -288,7 +241,7 @@ Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
         'archivedAt': FieldValue.delete(),
       });
     }
-    batch.update(firestore.collection('subjects').doc(cluster.id), {
+    batch.update(firestore.collection(_kModuleSubjectsCol).doc(cluster.id), {
       'archived': false,
       'archivedAt': FieldValue.delete(),
     });
@@ -308,10 +261,8 @@ Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Permanently delete an already-archived cluster (admin only) — hard-deletes
-// the cluster document and every module under its code (archived or not,
-// as a safety net). This cannot be undone. Called from
-// ArchivedSubjectsList below.
+// Permanently delete an already-archived module subject (admin only) and all
+// of its modules. Cannot be undone.
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> permanentlyDeleteSubject(
@@ -354,7 +305,7 @@ Future<void> permanentlyDeleteSubject(
     for (final doc in modulesSnap.docs) {
       batch.delete(doc.reference);
     }
-    batch.delete(firestore.collection('subjects').doc(cluster.id));
+    batch.delete(firestore.collection(_kModuleSubjectsCol).doc(cluster.id));
     await batch.commit();
 
     if (context.mounted) {
@@ -372,11 +323,6 @@ Future<void> permanentlyDeleteSubject(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TeacherModulesScreen (shared by Instructor + Admin accountTypes)
-//
-// NOTE: the subject filter that used to sit at the top of this screen has
-// been intentionally removed. Subjects are already shown and selectable
-// inside the "Add Module" sheet. The filter bar is still used on the Student
-// side (see StudentModulesScreen below).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TeacherModulesScreen extends StatefulWidget {
@@ -397,8 +343,6 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   void initState() {
     super.initState();
     _loadAccountType();
-    // Separate subscription (outside the build-time StreamBuilder) purely to
-    // detect cluster changes and toast a notification for non-admin users.
     _subjectsSub = _subjectsStream().listen(_onSubjectsChanged);
   }
 
@@ -440,6 +384,14 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _openManageSubjects() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => ManageModuleSubjectsScreen(isAdmin: _isAdmin)),
+    );
   }
 
   // ── Archive a module (sets archived: true) ──────────────────────────────
@@ -507,80 +459,261 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
               builder: (_) => _UploadModuleSheet(
                 teacherUid: _user?.uid ?? '',
                 clusters: clusters,
+                isAdmin: _isAdmin,
                 onSaved: _onModuleSaved,
               ),
             ),
           ),
-          // ── Module list ─────────────────────────────────────────────
-          body: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('modules')
-                .where('uploadedBy', isEqualTo: _user?.uid)
-                // Only show non-archived modules
-                .where('archived', isEqualTo: false)
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting &&
-                  !snapshot.hasData) {
-                return const Center(
-                    child: CircularProgressIndicator(
-                        color: Color(0xFF1A237E)));
-              }
-
-              final docs = snapshot.data?.docs ?? [];
-
-              // Manually sort by uploadedAt descending
-              docs.sort((a, b) {
-                final aTime =
-                    (a.data() as Map<String, dynamic>)['uploadedAt']
-                        as Timestamp?;
-                final bTime =
-                    (b.data() as Map<String, dynamic>)['uploadedAt']
-                        as Timestamp?;
-                if (aTime == null && bTime == null) return 0;
-                if (aTime == null) return 1;
-                if (bTime == null) return -1;
-                return bTime.compareTo(aTime);
-              });
-
-              if (docs.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.folder_open_rounded,
-                          size: 72, color: Colors.grey[300]),
-                      const SizedBox(height: 14),
-                      Text('No modules added yet.',
-                          style: TextStyle(
-                              color: Colors.grey[500], fontSize: 15)),
-                      const SizedBox(height: 6),
-                      Text('Tap "Add Module" to get started.',
-                          style: TextStyle(
-                              color: Colors.grey[400], fontSize: 13)),
-                    ],
+          body: Column(
+            children: [
+              // ── Manage Subjects entry point ─────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _openManageSubjects,
+                    icon: const Icon(Icons.tune_rounded, size: 18),
+                    label: const Text('Manage Subjects'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF1A237E),
+                      side: const BorderSide(color: Color(0xFF1A237E)),
+                      backgroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
                   ),
-                );
-              }
+                ),
+              ),
 
-              return ListView.separated(
-                padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
-                itemCount: docs.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  final doc = docs[index];
-                  final data = doc.data() as Map<String, dynamic>;
-                  return _ModuleCard(
-                    data: data,
-                    isTeacher: true,
-                    onArchive: () => _archiveModule(doc.id),
-                  );
-                },
-              );
-            },
+              // ── Module list ─────────────────────────────────────────
+              Expanded(
+                child: StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('modules')
+                      .where('uploadedBy', isEqualTo: _user?.uid)
+                      .where('archived', isEqualTo: false)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting &&
+                        !snapshot.hasData) {
+                      return const Center(
+                          child: CircularProgressIndicator(
+                              color: Color(0xFF1A237E)));
+                    }
+
+                    final docs = snapshot.data?.docs ?? [];
+
+                    docs.sort((a, b) {
+                      final aTime =
+                          (a.data() as Map<String, dynamic>)['uploadedAt']
+                              as Timestamp?;
+                      final bTime =
+                          (b.data() as Map<String, dynamic>)['uploadedAt']
+                              as Timestamp?;
+                      if (aTime == null && bTime == null) return 0;
+                      if (aTime == null) return 1;
+                      if (bTime == null) return -1;
+                      return bTime.compareTo(aTime);
+                    });
+
+                    if (docs.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.folder_open_rounded,
+                                size: 72, color: Colors.grey[300]),
+                            const SizedBox(height: 14),
+                            Text('No modules added yet.',
+                                style: TextStyle(
+                                    color: Colors.grey[500], fontSize: 15)),
+                            const SizedBox(height: 6),
+                            Text('Tap "Add Module" to get started.',
+                                style: TextStyle(
+                                    color: Colors.grey[400], fontSize: 13)),
+                          ],
+                        ),
+                      );
+                    }
+
+                    return ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final doc = docs[index];
+                        final data = doc.data() as Map<String, dynamic>;
+                        return _ModuleCard(
+                          data: data,
+                          isTeacher: true,
+                          onArchive: () => _archiveModule(doc.id),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         );
       },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ManageModuleSubjectsScreen
+//
+// Modules > Manage Subjects. Separate from Manage Curriculum.
+//   Active tab   : list of module subjects with an Archive button
+//   Archived tab : archived subjects with Restore (and Delete Permanently for
+//                  admins)
+//   "Add Subject": adds a subject that instantly appears in the Add Module
+//                  subject picker.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ManageModuleSubjectsScreen extends StatefulWidget {
+  final bool isAdmin;
+  const ManageModuleSubjectsScreen({super.key, this.isAdmin = false});
+
+  @override
+  State<ManageModuleSubjectsScreen> createState() =>
+      _ManageModuleSubjectsScreenState();
+}
+
+class _ManageModuleSubjectsScreenState
+    extends State<ManageModuleSubjectsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isAdmin) _migrateOldClusters();
+  }
+
+  // One-time move of the old module clusters out of the curriculum's
+  // `subjects` collection into `moduleSubjects`. Curriculum documents always
+  // have yearLevel/semester, so they are skipped. Safe to run repeatedly.
+  Future<void> _migrateOldClusters() async {
+    try {
+      final fs = FirebaseFirestore.instance;
+      final old = await fs.collection('subjects').get();
+      final batch = fs.batch();
+      var n = 0;
+      for (final doc in old.docs) {
+        final d = doc.data();
+        if (d.containsKey('yearLevel') || d.containsKey('semester')) continue;
+        batch.set(fs.collection(_kModuleSubjectsCol).doc(doc.id), d);
+        batch.delete(doc.reference);
+        n++;
+      }
+      if (n > 0) await batch.commit();
+    } catch (_) {
+      // Non-fatal.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF4F6FB),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF1A237E),
+          foregroundColor: Colors.white,
+          title: const Text('Manage Subjects',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          bottom: const TabBar(
+            indicatorColor: Colors.white,
+            indicatorWeight: 3,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white60,
+            labelStyle: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            tabs: [Tab(text: 'Active'), Tab(text: 'Archived')],
+          ),
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          heroTag: 'addModuleSubject',
+          backgroundColor: const Color(0xFF1A237E),
+          foregroundColor: Colors.white,
+          icon: const Icon(Icons.add_rounded),
+          label: const Text('Add Subject',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          onPressed: () => showAddSubjectSheet(context),
+        ),
+        body: TabBarView(
+          children: [
+            // ── Active ───────────────────────────────────────────────
+            StreamBuilder<List<_Cluster>>(
+              stream: _subjectsStream(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(
+                    child: Text('Error: ${snap.error}',
+                        style: const TextStyle(color: Colors.red)),
+                  );
+                }
+                if (!snap.hasData) {
+                  return const Center(
+                      child: CircularProgressIndicator(
+                          color: Color(0xFF1A237E)));
+                }
+                final subjects = snap.data!;
+                if (subjects.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'No subjects yet.\nTap "Add Subject" to create one.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                    ),
+                  );
+                }
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8EAF6),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline_rounded,
+                              color: Color(0xFF1A237E), size: 16),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'These subjects are used when uploading modules. '
+                              'Archiving a subject also archives its modules; '
+                              'restoring it brings them back.',
+                              style: TextStyle(
+                                  fontSize: 12, color: Color(0xFF1A237E)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    for (final s in subjects) ...[
+                      _ManageSubjectRow(
+                        cluster: s,
+                        onArchive: () => archiveSubject(context, s),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  ],
+                );
+              },
+            ),
+
+            // ── Archived ─────────────────────────────────────────────
+            ArchivedSubjectsList(canDelete: widget.isAdmin),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -608,15 +741,12 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 
         return Column(
           children: [
-            // ── Subject filter (hamburger menu) ───────────────────────
             _ClusterFilterBar(
               clusters: clusters,
               selected: _selectedCluster,
               onSelect: (v) => setState(() => _selectedCluster = v),
             ),
             const Divider(height: 1),
-
-            // ── Module list ───────────────────────────────────────────
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
                 stream: FirebaseFirestore.instance
@@ -698,11 +828,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Subject Filter Bar (hamburger menu) — used by the Student screen only.
-//
-// A single hamburger (☰) button showing the current selection; tapping it
-// opens a bottom sheet listing "All" plus every cluster as a tappable row,
-// with a checkmark on whichever one is currently selected.
+// Subject Filter Bar (student side)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ClusterFilterBar extends StatelessWidget {
@@ -782,8 +908,6 @@ class _ClusterFilterBar extends StatelessWidget {
   }
 }
 
-// The bottom sheet opened by the hamburger icon: "All" plus one row per
-// cluster, each tappable, with a checkmark on whichever is selected.
 class _SubjectMenuSheet extends StatelessWidget {
   final List<_Cluster> clusters;
   final String selected;
@@ -963,10 +1087,6 @@ class _ModuleCard extends StatefulWidget {
 }
 
 class _ModuleCardState extends State<_ModuleCard> {
-  // Instructor who uploaded this module — looked up once from `users` via
-  // the module's `uploadedBy` uid. Null while loading or if unavailable
-  // (e.g. an older module saved before this lookup existed, or a missing
-  // user doc), in which case the chip is simply omitted.
   String? _teacherName;
 
   @override
@@ -992,8 +1112,7 @@ class _ModuleCardState extends State<_ModuleCard> {
         setState(() => _teacherName = fullName);
       }
     } catch (_) {
-      // Silently skip — a missing/unreadable instructor name shouldn't
-      // block the rest of the card from displaying.
+      // Silently skip.
     }
   }
 
@@ -1014,9 +1133,6 @@ class _ModuleCardState extends State<_ModuleCard> {
   Widget build(BuildContext context) {
     final title = widget.data['title'] as String? ?? 'Untitled Module';
     final clusterCode = widget.data['cluster'] as String? ?? '';
-    // clusterLabel is stored on the module itself at creation time, and
-    // color/icon are derived from the code — so this card never needs to
-    // look anything up in a separate subjects list.
     final clusterLabel = widget.data['clusterLabel'] as String? ?? clusterCode;
     final fileUrl = widget.data['fileUrl'] as String? ?? '';
     final hasCluster = clusterCode.isNotEmpty;
@@ -1045,7 +1161,6 @@ class _ModuleCardState extends State<_ModuleCard> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── Module icon ───────────────────────────────────
                 Container(
                   width: 48,
                   height: 48,
@@ -1086,7 +1201,6 @@ class _ModuleCardState extends State<_ModuleCard> {
                     ],
                   ),
                 ),
-                // ── Archive button (teacher only) ────────────────
                 if (widget.isTeacher && widget.onArchive != null)
                   GestureDetector(
                     onTap: widget.onArchive,
@@ -1116,7 +1230,6 @@ class _ModuleCardState extends State<_ModuleCard> {
               ],
             ),
           ),
-          // ── Preview / Read button ─────────────────────────────
           InkWell(
             onTap: fileUrl.isNotEmpty ? () => _open(context, fileUrl) : null,
             borderRadius:
@@ -1322,14 +1435,13 @@ void _showSuccessDialog(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Add Subject Bottom Sheet (admin only)
+// Add Subject Bottom Sheet
 //
-// Public so it can be launched from anywhere via showAddSubjectSheet() above.
+// Adds a MODULE subject (collection `moduleSubjects`). It is separate from the
+// curriculum. The new subject appears immediately in the Add Module subject
+// picker and in Manage Subjects.
 //
-// Doubles as "Manage Subjects": below the add form is a live list of every
-// existing ACTIVE cluster with a delete button, so admins have one place to
-// both add and archive clusters (archiveSubject() auto-archives that
-// cluster's modules too — see above).
+// Managing (archive / restore) lives in ManageModuleSubjectsScreen.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AddSubjectSheet extends StatefulWidget {
@@ -1372,28 +1484,30 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
     setState(() => _saving = true);
     try {
       final existing = await FirebaseFirestore.instance
-          .collection('subjects')
+          .collection(_kModuleSubjectsCol)
           .where('code', isEqualTo: code)
           .limit(1)
           .get();
 
       if (existing.docs.isNotEmpty) {
-        _snack('A subject with code "$code" already exists.');
+        final archived = existing.docs.first.data()['archived'] == true;
+        _snack(archived
+            ? '"$code" is in the Archived tab. Restore it instead.'
+            : 'A subject with code "$code" already exists.');
         return;
       }
 
-      await FirebaseFirestore.instance.collection('subjects').add({
+      await FirebaseFirestore.instance.collection(_kModuleSubjectsCol).add({
         'code': code,
         'label': label,
         'createdAt': FieldValue.serverTimestamp(),
         'archived': false,
       });
 
-      // Clear the form instead of closing the sheet — admins can keep
-      // adding subjects, and the Manage Subjects list below updates live.
+      // Clear the form so more subjects can be added right away.
       _codeController.clear();
       _labelController.clear();
-      if (mounted) _snack('Subject added.');
+      if (mounted) _snack('Subject added. It is now available for modules.');
     } catch (e) {
       _snack('Failed to add subject: $e');
     } finally {
@@ -1408,8 +1522,6 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      // Cap the sheet's height so a long list still scrolls nicely
-      // instead of pushing the add form off-screen.
       constraints: BoxConstraints(
           maxHeight: MediaQuery.of(context).size.height * 0.85),
       padding: EdgeInsets.fromLTRB(
@@ -1468,7 +1580,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'New subjects appear instantly on both the Admin and Instructor dashboards, and can be picked when adding a module.',
+                      'This adds a subject for uploading modules only. It does not change the curriculum. The new subject appears instantly in the Add Module subject list.',
                       style: TextStyle(
                           fontSize: 12, color: Color(0xFF1A237E)),
                     ),
@@ -1525,72 +1637,6 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
                 ),
               ),
             ),
-
-            // ── Manage Subjects ──────────────────────────────────────
-            const SizedBox(height: 28),
-            const Divider(height: 1),
-            const SizedBox(height: 18),
-            const Row(
-              children: [
-                Icon(Icons.tune_rounded,
-                    color: Color(0xFF1A237E), size: 18),
-                SizedBox(width: 8),
-                Text('Manage Subjects',
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A237E))),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Archiving a subject also archives any modules under it. '
-              'Find archived subjects (with Restore / Delete Permanently) '
-              'in the Archive tab.',
-              style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-            ),
-            const SizedBox(height: 12),
-            StreamBuilder<List<_Cluster>>(
-              stream: _subjectsStream(),
-              builder: (context, snap) {
-                if (!snap.hasData) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Center(
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Color(0xFF1A237E)),
-                      ),
-                    ),
-                  );
-                }
-
-                final subjects = snap.data!;
-                if (subjects.isEmpty) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      'No subjects yet — add one above.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                    ),
-                  );
-                }
-
-                return Column(
-                  children: [
-                    for (final subject in subjects) ...[
-                      _ManageSubjectRow(
-                        cluster: subject,
-                        onDelete: () => archiveSubject(context, subject),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ],
-                );
-              },
-            ),
           ],
         ),
       ),
@@ -1618,17 +1664,19 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A single row in the "Manage Subjects" list inside AddSubjectSheet.
+// A single row in the Active list of ManageModuleSubjectsScreen.
+// The button ARCHIVES the subject (it is not a permanent delete).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ManageSubjectRow extends StatelessWidget {
   final _Cluster cluster;
-  final VoidCallback onDelete;
+  final VoidCallback onArchive;
 
-  const _ManageSubjectRow({required this.cluster, required this.onDelete});
+  const _ManageSubjectRow({required this.cluster, required this.onArchive});
 
   @override
   Widget build(BuildContext context) {
+    const archiveColor = Color(0xFFD84315);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -1667,16 +1715,19 @@ class _ManageSubjectRow extends StatelessWidget {
               ],
             ),
           ),
-          GestureDetector(
-            onTap: onDelete,
-            child: Container(
-              padding: const EdgeInsets.all(7),
-              decoration: BoxDecoration(
-                color: Colors.red.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(8),
+          Tooltip(
+            message: 'Archive',
+            child: GestureDetector(
+              onTap: onArchive,
+              child: Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: archiveColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.inventory_2_outlined,
+                    size: 18, color: archiveColor),
               ),
-              child: const Icon(Icons.delete_outline_rounded,
-                  size: 18, color: Colors.red),
             ),
           ),
         ],
@@ -1686,27 +1737,29 @@ class _ManageSubjectRow extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArchivedSubjectsList — public widget showing every archived cluster with
-// Restore and Delete Permanently actions. Drop this into any tab/screen.
+// ArchivedSubjectsList — archived module subjects with Restore and (optionally)
+// Delete Permanently. Set [canDelete] to false to hide permanent delete
+// (e.g. for instructors). Default true keeps old callers working.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ArchivedSubjectsList extends StatelessWidget {
-  const ArchivedSubjectsList({super.key});
+  final bool canDelete;
+  const ArchivedSubjectsList({super.key, this.canDelete = true});
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<_Cluster>>(
       stream: _archivedSubjectsStream(),
       builder: (context, snap) {
-        if (!snap.hasData) {
-          return const Center(
-              child: CircularProgressIndicator(color: Color(0xFFD84315)));
-        }
         if (snap.hasError) {
           return Center(
             child: Text('Error: ${snap.error}',
                 style: const TextStyle(color: Colors.red)),
           );
+        }
+        if (!snap.hasData) {
+          return const Center(
+              child: CircularProgressIndicator(color: Color(0xFFD84315)));
         }
 
         final subjects = snap.data!;
@@ -1738,8 +1791,9 @@ class ArchivedSubjectsList extends StatelessWidget {
               key: ValueKey(cluster.id),
               cluster: cluster,
               onRestore: () => restoreSubject(context, cluster),
-              onDeletePermanently: () =>
-                  permanentlyDeleteSubject(context, cluster),
+              onDeletePermanently: canDelete
+                  ? () => permanentlyDeleteSubject(context, cluster)
+                  : null,
             );
           },
         );
@@ -1751,13 +1805,13 @@ class ArchivedSubjectsList extends StatelessWidget {
 class _ArchivedSubjectCard extends StatelessWidget {
   final _Cluster cluster;
   final VoidCallback onRestore;
-  final VoidCallback onDeletePermanently;
+  final VoidCallback? onDeletePermanently;
 
   const _ArchivedSubjectCard({
     super.key,
     required this.cluster,
     required this.onRestore,
-    required this.onDeletePermanently,
+    this.onDeletePermanently,
   });
 
   static const _monthNames = [
@@ -1836,13 +1890,15 @@ class _ArchivedSubjectCard extends StatelessWidget {
                 color: const Color(0xFF1A237E),
                 onTap: onRestore,
               ),
-              const SizedBox(height: 4),
-              _SmallActionButton(
-                label: 'Delete',
-                icon: Icons.delete_forever_rounded,
-                color: Colors.red.shade600,
-                onTap: onDeletePermanently,
-              ),
+              if (onDeletePermanently != null) ...[
+                const SizedBox(height: 4),
+                _SmallActionButton(
+                  label: 'Delete',
+                  icon: Icons.delete_forever_rounded,
+                  color: Colors.red.shade600,
+                  onTap: onDeletePermanently!,
+                ),
+              ],
             ],
           ),
         ],
@@ -1891,27 +1947,22 @@ class _SmallActionButton extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Add Module Bottom Sheet
 //
-// The instructor picks a file from this device; it uploads straight into
-// their own Google Drive (ReviewHub Modules folder) and is shared view-only
-// so students can open it. "Open Google Drive" is just a convenience shortcut
-// (new tab/browser window) in case they need to grab the file from Drive
-// first — it plays no part in the upload itself.
-//
-// The "Subject Cluster" picker shows ONLY the main clusters (CRIM, CLJ, CDI,
-// FORENSIC, LEA, CA, ENG …) — never the numbered curriculum subjects.
-//
-// Saved fields: `fileUrl`, `driveFileId`, `fileName`, `driveOwnerEmail`.
+// The Subject picker is LIVE: it listens to the active module subjects, so a
+// subject added (or archived/restored) while this sheet is open shows up
+// right away. The "Add / manage subjects" button opens Manage Subjects.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
   final String teacherUid;
   final List<_Cluster> clusters;
+  final bool isAdmin;
   final void Function(String title, _Cluster cluster) onSaved;
 
   const _UploadModuleSheet({
     required this.teacherUid,
     required this.clusters,
     required this.onSaved,
+    this.isAdmin = false,
   });
 
   @override
@@ -1921,7 +1972,8 @@ class _UploadModuleSheet extends StatefulWidget {
 class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   final _titleController = TextEditingController();
 
-  _Cluster? _selectedCluster;
+  String? _selectedCode;
+  late List<_Cluster> _clusters;
   bool _saving = false;
   bool _connecting = false;
   String? _driveEmail;
@@ -1931,11 +1983,19 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt'
   ];
 
+  /// The chosen subject, falling back to the first one if the chosen subject
+  /// no longer exists (e.g. it was just archived).
+  _Cluster? get _selectedCluster {
+    for (final c in _clusters) {
+      if (c.code == _selectedCode) return c;
+    }
+    return _clusters.isNotEmpty ? _clusters.first : null;
+  }
+
   @override
   void initState() {
     super.initState();
-    _selectedCluster =
-        widget.clusters.isNotEmpty ? widget.clusters.first : null;
+    _clusters = widget.clusters;
     _driveEmail = GoogleDriveService.connectedEmail;
   }
 
@@ -1950,10 +2010,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
   String? get _accountEmail => FirebaseAuth.instance.currentUser?.email;
 
-  /// Makes sure a Google account is connected, opening Google's account
-  /// chooser (or signing straight in when only one account is available) if
-  /// not. On web this must be the first await inside a tap handler so the
-  /// browser doesn't block the sign-in popup.
   Future<bool> _ensureConnected() async {
     if (_driveEmail != null) return true;
     setState(() => _connecting = true);
@@ -2002,9 +2058,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
-  /// Opens Google Drive in a new browser tab (web) or the device's browser
-  /// app (mobile/desktop) so the instructor can find or upload their file and
-  /// set its sharing there, using Drive's own familiar UI.
   Future<void> _openDrive() async {
     final uri = Uri.parse('https://drive.google.com/drive/my-drive');
     try {
@@ -2016,11 +2069,20 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
+  void _openManageSubjects() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => ManageModuleSubjectsScreen(isAdmin: widget.isAdmin)),
+    );
+  }
+
   Future<void> _save() async {
     final title = _titleController.text.trim();
+    final cluster = _selectedCluster;
 
-    if (_selectedCluster == null) {
-      _snack('No subjects available yet. Ask an admin to add one first.');
+    if (cluster == null) {
+      _snack('No subjects available yet. Tap "Add / manage subjects" first.');
       return;
     }
     if (title.isEmpty) {
@@ -2032,7 +2094,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       return;
     }
 
-    // Connects here, at the moment of saving, if not already connected.
     if (!await _ensureConnected() || !mounted) return;
 
     setState(() => _saving = true);
@@ -2045,8 +2106,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
       await FirebaseFirestore.instance.collection('modules').add({
         'title': title,
-        'cluster': _selectedCluster!.code,
-        'clusterLabel': _selectedCluster!.label,
+        'cluster': cluster.code,
+        'clusterLabel': cluster.label,
         'fileUrl': result.viewUrl,
         'driveFileId': result.fileId,
         'fileName': result.fileName,
@@ -2058,10 +2119,9 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
       if (mounted) {
         final savedTitle = title;
-        final savedCluster = _selectedCluster!;
         Navigator.pop(context);
         Future.delayed(const Duration(milliseconds: 300), () {
-          widget.onSaved(savedTitle, savedCluster);
+          widget.onSaved(savedTitle, cluster);
         });
       }
     } on StateError {
@@ -2083,110 +2143,18 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      padding: EdgeInsets.fromLTRB(
-          20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 24),
-      child: SingleChildScrollView(
-        child: Column(
+  Widget _buildSubjectPicker() {
+    return StreamBuilder<List<_Cluster>>(
+      stream: _subjectsStream(),
+      initialData: _clusters,
+      builder: (context, snap) {
+        _clusters = snap.data ?? _clusters;
+        final selectedCode = _selectedCluster?.code;
+
+        return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
           children: [
-            // ── Handle bar ────────────────────────────────────────
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2)),
-              ),
-            ),
-
-            // ── Header row with close/back icon ─────────────────────
-            Row(
-              children: [
-                const Icon(Icons.add_to_drive_rounded,
-                    color: Color(0xFF1A237E), size: 20),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text('Add Module',
-                      style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A237E))),
-                ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.arrow_back_rounded,
-                      color: Color(0xFF1A237E), size: 20),
-                  splashRadius: 20,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                      minWidth: 32, minHeight: 32),
-                  tooltip: 'Close',
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-
-            // ── Instruction banner ────────────────────────────────
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8EAF6),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.info_outline_rounded,
-                      color: Color(0xFF1A237E), size: 16),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Choose a file from this device to upload. It is saved '
-                      'to your Google Drive (ReviewHub Modules folder) and '
-                      'shared with students as view-only. Need to grab it '
-                      'from Drive first? Use "Open Google Drive" below.',
-                      style:
-                          TextStyle(fontSize: 12, color: Color(0xFF1A237E)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // ── Module Title ──────────────────────────────────────
-            const Text('Module Title',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF3949AB))),
-            const SizedBox(height: 6),
-            TextField(
-              controller: _titleController,
-              decoration: _inputDeco(
-                  'e.g. Chapter 1: Introduction to Corrections',
-                  Icons.title_rounded),
-            ),
-            const SizedBox(height: 14),
-
-            // ── Subject Cluster (main clusters only) ──────────────
-            const Text('Subject Cluster',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF3949AB))),
-            const SizedBox(height: 10),
-            if (widget.clusters.isEmpty)
+            if (_clusters.isEmpty)
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -2195,7 +2163,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   border: Border.all(color: const Color(0xFFFFCC80)),
                 ),
                 child: const Text(
-                  'No subjects exist yet. Ask an admin to add one first (via "Add Subject" in the menu).',
+                  'No subjects exist yet. Tap "Add / manage subjects" below to add one.',
                   style: TextStyle(fontSize: 12, color: Color(0xFFE65100)),
                 ),
               )
@@ -2203,12 +2171,12 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: widget.clusters.map((c) {
-                  final isSelected = _selectedCluster?.code == c.code;
+                children: _clusters.map((c) {
+                  final isSelected = selectedCode == c.code;
                   return GestureDetector(
                     onTap: _saving
                         ? null
-                        : () => setState(() => _selectedCluster = c),
+                        : () => setState(() => _selectedCode = c.code),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       padding: const EdgeInsets.symmetric(
@@ -2256,13 +2224,125 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   );
                 }).toList(),
               ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _saving ? null : _openManageSubjects,
+                icon: const Icon(Icons.add_rounded, size: 16),
+                label: const Text('Add / manage subjects'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF1A237E),
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-            // ── Google account + file ─────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+          20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            Row(
+              children: [
+                const Icon(Icons.add_to_drive_rounded,
+                    color: Color(0xFF1A237E), size: 20),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Add Module',
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1A237E))),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back_rounded,
+                      color: Color(0xFF1A237E), size: 20),
+                  splashRadius: 20,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                      minWidth: 32, minHeight: 32),
+                  tooltip: 'Close',
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8EAF6),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline_rounded,
+                      color: Color(0xFF1A237E), size: 16),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Choose a file from this device to upload. It is saved '
+                      'to your Google Drive (ReviewHub Modules folder) and '
+                      'shared with students as view-only. Need to grab it '
+                      'from Drive first? Use "Open Google Drive" below.',
+                      style:
+                          TextStyle(fontSize: 12, color: Color(0xFF1A237E)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text('Module Title',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3949AB))),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _titleController,
+              decoration: _inputDeco(
+                  'e.g. Chapter 1: Introduction to Corrections',
+                  Icons.title_rounded),
+            ),
+            const SizedBox(height: 14),
+            const Text('Subject',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3949AB))),
+            const SizedBox(height: 10),
+            _buildSubjectPicker(),
+            const SizedBox(height: 14),
             ..._buildFileSection(),
             const SizedBox(height: 24),
-
-            // ── Save button ───────────────────────────────────────
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
