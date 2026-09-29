@@ -4,96 +4,17 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../login_screen.dart';
 import 'take_quiz_screen.dart';
 import 'modules_screen.dart';
+import 'curriculum_repo.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BS Criminology Curriculum Data
+// NOTE: the BS Criminology curriculum is no longer hardcoded in this file.
+// The Subjects tab now reads the LIVE curriculum from CurriculumRepo, which
+// merges the official BS Criminology subjects with anything an admin added in
+// Manage Curriculum, and leaves out archived subjects. So a new subject shows
+// up under its year level and semester automatically, and an archived one
+// disappears, with no app update needed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _Subject {
-  final String code;
-  final String description;
-  const _Subject(this.code, this.description);
-}
-
-class _YearCurriculum {
-  final String yearLabel;
-  final List<_Subject> sem1;
-  final List<_Subject> sem2;
-  const _YearCurriculum(
-      {required this.yearLabel, required this.sem1, required this.sem2});
-}
-
-const _curriculum = [
-  _YearCurriculum(
-    yearLabel: '1st Year',
-    sem1: [
-      _Subject('CRIM 1', 'Introduction to Criminology'),
-    ],
-    sem2: [
-      _Subject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
-      _Subject('LEA 1', 'Law Enforcement Organization and Administration'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '2nd Year',
-    sem1: [
-      _Subject('CA 1', 'Institutional Corrections'),
-      _Subject('CDI 1', 'Fundamentals of Investigation and Intelligence'),
-      _Subject('CLJ 2', 'Human Rights Education'),
-      _Subject('CRIM 2', 'Theories of Crime Causation'),
-      _Subject('LEA 2', 'Comparative Models in Policing'),
-    ],
-    sem2: [
-      _Subject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
-      _Subject('CFLM 1', 'Character Formation, Nationalism and Patriotism'),
-      _Subject('CLJ 3', 'Criminal Law (Book 1)'),
-      _Subject('CRIM 3', 'Human Behavior and Victimology'),
-      _Subject('FORENSIC 1', 'Forensic Photography'),
-      _Subject('FORENSIC 2', 'Personal Identification Techniques'),
-      _Subject('LEA 3', 'Introduction to Industrial Security Concepts'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '3rd Year',
-    sem1: [
-      _Subject('CA 2', 'Non-Institutional Corrections'),
-      _Subject('CDI 3', 'Specialized Crime Investigation 2 with Simulation on Interrogation and Interview'),
-      _Subject('CDI 4', 'Traffic Management and Accident Investigation with Driving'),
-      _Subject('CDI 5', 'Technical English 1 (Technical Report Writing and Presentation)'),
-      _Subject('CFLM 2', 'Character Formation with Leadership, Decision Making, Management and Administration'),
-      _Subject('CLJ 4', 'Criminal Law (Book 2)'),
-      _Subject('FORENSIC 3', 'Forensic Chemistry and Toxicology'),
-      _Subject('FORENSIC 4', 'Questioned Documents Examination'),
-      _Subject('LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
-    ],
-    sem2: [
-      _Subject('CA 3', 'Therapeutic Modalities'),
-      _Subject('CDI 6', 'Fire Protection and Arson Investigation'),
-      _Subject('CDI 7', 'Vice and Drug Education and Control'),
-      _Subject('CLJ 5', 'Evidence'),
-      _Subject('CRIM 4', 'Professional Conduct and Ethical Standards'),
-      _Subject('CRIM 5', 'Juvenile Delinquency and Juvenile Justice System'),
-      _Subject('CRIM 6', 'Dispute Resolution and Crises/Incidents Management'),
-      _Subject('CRIM 7', 'Criminological Research 1 (Research Methods with Applied Statistics)'),
-      _Subject('FORENSIC 5', 'Lie Detection Techniques'),
-      _Subject('FORENSIC 6', 'Forensic Ballistics'),
-    ],
-  ),
-  _YearCurriculum(
-    yearLabel: '4th Year',
-    sem1: [
-      _Subject('CDI 8', 'Technical English 2 (Legal Forms)'),
-      _Subject('CDI 9', 'Introduction to Cybercrime and Environmental Laws and Protection'),
-      _Subject('CLJ 6', 'Criminal Procedure and Court Testimony'),
-      _Subject('CP 1', 'Internship (On-the-Job Training 1)'),
-      _Subject('CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
-    ],
-    sem2: [
-      _Subject('CP 2', 'Internship (On-the-Job Training 2)'),
-      _Subject('ICRIM RC', 'Criminology Refresher Course'),
-    ],
-  ),
-];
 // ─────────────────────────────────────────────────────────────────────────────
 // Background painter — same floating text as login & teacher screens
 // ─────────────────────────────────────────────────────────────────────────────
@@ -498,46 +419,6 @@ class _QuizzesTab extends StatelessWidget {
     'All Years', '1st Year', '2nd Year', '3rd Year', '4th Year',
   ];
 
-  Map<String, List<_Subject>> _groupedSubjectsForYear() {
-    final sem1 = <_Subject>[];
-    final sem2 = <_Subject>[];
-    final seen = <String>{};
-
-    void addUnique(List<_Subject> target, List<_Subject> source) {
-      for (final s in source) {
-        if (!seen.contains(s.description)) {
-          seen.add(s.description);
-          target.add(s);
-        }
-      }
-    }
-
-    if (selectedYearLevel == 'All Years') {
-      for (final y in _curriculum) {
-        addUnique(sem1, y.sem1);
-        addUnique(sem2, y.sem2);
-      }
-    } else {
-      final match = _curriculum.firstWhere(
-        (y) => y.yearLabel == selectedYearLevel,
-        orElse: () =>
-            const _YearCurriculum(yearLabel: '', sem1: [], sem2: []),
-      );
-      addUnique(sem1, match.sem1);
-      addUnique(sem2, match.sem2);
-    }
-    return {'sem1': sem1, 'sem2': sem2};
-  }
-
-  List<String> _allSubjectDescriptions() {
-    final g = _groupedSubjectsForYear();
-    return [
-      'All Subjects',
-      ...g['sem1']!.map((s) => s.description),
-      ...g['sem2']!.map((s) => s.description),
-    ];
-  }
-
   Stream<QuerySnapshot> _buildQuizStream() {
     Query query = FirebaseFirestore.instance
         .collection('quizzes')
@@ -557,9 +438,10 @@ class _QuizzesTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final allDescs = _allSubjectDescriptions();
-    final effectiveSubject =
-        allDescs.contains(selectedSubject) ? selectedSubject : 'All Subjects';
+    // The subject filter is reset to 'All Subjects' whenever the year changes,
+    // so the selected subject can be used as-is (no hardcoded subject list
+    // needed any more).
+    final effectiveSubject = selectedSubject;
 
     return Column(
       children: [
@@ -690,7 +572,12 @@ class _QuizzesTab extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Subjects Tab
+// Subjects Tab — shows the LIVE curriculum
+//
+// Source: CurriculumRepo.streamAll() = the official BS Criminology subjects
+// plus any subjects an admin added in Manage Curriculum, minus archived ones.
+// It updates in real time: add a subject and it appears under its year and
+// semester; archive it and it disappears.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SubjectsTab extends StatefulWidget {
@@ -703,6 +590,9 @@ class _SubjectsTab extends StatefulWidget {
 class _SubjectsTabState extends State<_SubjectsTab> {
   int? _expandedYear;
 
+  // Created once so the tab doesn't resubscribe on every rebuild.
+  late final Stream<List<Subject>> _stream = CurriculumRepo.streamAll();
+
   static const _yearColors = [
     Color(0xFF1A237E),
     Color(0xFF00695C),
@@ -712,41 +602,80 @@ class _SubjectsTabState extends State<_SubjectsTab> {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(14),
-      children: [
-        const Padding(
-          padding: EdgeInsets.only(bottom: 12),
-          child: Text(
-            'BS Criminology Curriculum',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-              color: Color(0xFF1A237E),
+    return StreamBuilder<List<Subject>>(
+      stream: _stream,
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Could not load the curriculum.\n${snap.error}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
             ),
-          ),
-        ),
-        for (int i = 0; i < _curriculum.length; i++)
-          _YearCard(
-            yearCurriculum: _curriculum[i],
-            color: _yearColors[i],
-            isExpanded: _expandedYear == i,
-            onToggle: () => setState(
-                () => _expandedYear = _expandedYear == i ? null : i),
-          ),
-      ],
+          );
+        }
+        if (!snap.hasData) {
+          return const Center(
+              child: CircularProgressIndicator(color: Color(0xFF1A237E)));
+        }
+
+        final all = snap.data!;
+        final years = CurriculumRepo.yearLevels;
+        final sem1Label = CurriculumRepo.semesters[0];
+        final sem2Label = CurriculumRepo.semesters[1];
+
+        return ListView(
+          padding: const EdgeInsets.all(14),
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'BS Criminology Curriculum',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Color(0xFF1A237E),
+                ),
+              ),
+            ),
+            for (int i = 0; i < years.length; i++)
+              _YearCard(
+                yearLabel: years[i],
+                sem1: all
+                    .where((s) =>
+                        s.yearLevel == years[i] && s.semester == sem1Label)
+                    .toList(),
+                sem2: all
+                    .where((s) =>
+                        s.yearLevel == years[i] && s.semester == sem2Label)
+                    .toList(),
+                color: _yearColors[i % _yearColors.length],
+                isExpanded: _expandedYear == i,
+                onToggle: () => setState(
+                    () => _expandedYear = _expandedYear == i ? null : i),
+              ),
+          ],
+        );
+      },
     );
   }
 }
 
 class _YearCard extends StatelessWidget {
-  final _YearCurriculum yearCurriculum;
+  final String yearLabel;
+  final List<Subject> sem1;
+  final List<Subject> sem2;
   final Color color;
   final bool isExpanded;
   final VoidCallback onToggle;
 
   const _YearCard({
-    required this.yearCurriculum,
+    required this.yearLabel,
+    required this.sem1,
+    required this.sem2,
     required this.color,
     required this.isExpanded,
     required this.onToggle,
@@ -754,8 +683,7 @@ class _YearCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final totalSubjects =
-        yearCurriculum.sem1.length + yearCurriculum.sem2.length;
+    final totalSubjects = sem1.length + sem2.length;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -785,12 +713,13 @@ class _YearCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(yearCurriculum.yearLabel,
+                        Text(yearLabel,
                             style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 15)),
-                        Text('$totalSubjects subjects across 2 semesters',
+                        Text(
+                            '$totalSubjects subject${totalSubjects == 1 ? '' : 's'} across 2 semesters',
                             style: const TextStyle(
                                 color: Colors.white70, fontSize: 11)),
                       ],
@@ -809,13 +738,13 @@ class _YearCard extends StatelessWidget {
           if (isExpanded) ...[
             _SemesterSection(
               label: '1st Semester',
-              subjects: yearCurriculum.sem1,
+              subjects: sem1,
               color: color,
             ),
             Divider(height: 1, color: Colors.grey.shade200),
             _SemesterSection(
               label: '2nd Semester',
-              subjects: yearCurriculum.sem2,
+              subjects: sem2,
               color: color,
             ),
           ],
@@ -827,7 +756,7 @@ class _YearCard extends StatelessWidget {
 
 class _SemesterSection extends StatelessWidget {
   final String label;
-  final List<_Subject> subjects;
+  final List<Subject> subjects;
   final Color color;
 
   const _SemesterSection({
@@ -855,6 +784,12 @@ class _SemesterSection extends StatelessWidget {
             ],
           ),
         ),
+        if (subjects.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text('No subjects yet.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+          ),
         for (final subject in subjects)
           _SubjectTile(
             subject: subject,
@@ -870,7 +805,7 @@ class _SemesterSection extends StatelessWidget {
 // this deliberately has no InkWell/onTap and no trailing chevron (a chevron
 // would visually imply the row is tappable).
 class _SubjectTile extends StatelessWidget {
-  final _Subject subject;
+  final Subject subject;
   final Color color;
 
   const _SubjectTile({
@@ -894,6 +829,8 @@ class _SubjectTile extends StatelessWidget {
             ),
             child: Text(subject.code,
                 textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
