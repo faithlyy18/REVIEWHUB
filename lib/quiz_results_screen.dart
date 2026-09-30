@@ -9,8 +9,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// - Columns: Rank, Student, Year, Subject/Quiz, Score, %, Date & Time, Status.
 /// - Status (Passed / Failed) is shown to everyone, based on the quiz's
 ///   required passing percentage.
-/// - The overall passing/failing report card is shown ONLY when
-///   [isAdmin] is true. The Admin can also change the required passing
+/// - The board-exam-style statistics card (overall passing rate, total
+///   passers / non-passers, and the average score and percentage of each
+///   group) is shown ONLY when [isAdmin] is true. The Admin can also change the required passing
 ///   percentage; it is saved on the quiz document as `passingPercent`
 ///   (defaults to 75 if never set).
 class QuizResultsScreen extends StatefulWidget {
@@ -257,10 +258,12 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                   rows.length;
               final highest = rows.first.score;
               final lowest = rows.last.score;
-              final passedCount = rows.where((r) => r.passed).length;
-              final failedCount = rows.length - passedCount;
-              final passRate = passedCount / rows.length * 100;
-              final failRate = failedCount / rows.length * 100;
+              final passers = _GroupStats.from(
+                  rows.where((r) => r.passed).toList());
+              final nonPassers = _GroupStats.from(
+                  rows.where((r) => !r.passed).toList());
+              final passRate = passers.count / rows.length * 100;
+              final failRate = nonPassers.count / rows.length * 100;
 
               return LayoutBuilder(
                 builder: (context, constraints) {
@@ -299,11 +302,12 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                                     const SizedBox(height: 12),
                                     _buildAdminReport(
                                       passingPercent: passingPercent,
-                                      passedCount: passedCount,
-                                      failedCount: failedCount,
+                                      passers: passers,
+                                      nonPassers: nonPassers,
+                                      totalStudents: rows.length,
+                                      totalQuestions: total,
                                       passRate: passRate,
                                       failRate: failRate,
-                                      totalStudents: rows.length,
                                     ),
                                   ],
                                 ],
@@ -570,15 +574,24 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
     );
   }
 
-  // ── Admin-only passing / failing report ──────────────────────────────────
+  // ── Admin-only board-exam-style report ───────────────────────────────────
+  String _rate(double v) => _pct(double.parse(v.toStringAsFixed(1)));
+
   Widget _buildAdminReport({
     required double passingPercent,
-    required int passedCount,
-    required int failedCount,
+    required _GroupStats passers,
+    required _GroupStats nonPassers,
+    required int totalStudents,
+    required int totalQuestions,
     required double passRate,
     required double failRate,
-    required int totalStudents,
   }) {
+    String avgScoreText(_GroupStats g) => g.count == 0
+        ? '—'
+        : '${g.avgScore.toStringAsFixed(1)}/$totalQuestions';
+    String avgPctText(_GroupStats g) =>
+        g.count == 0 ? '—' : '${g.avgPercent.toStringAsFixed(1)}%';
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -599,7 +612,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
             const Icon(Icons.assessment_rounded, color: _brand, size: 20),
             const SizedBox(width: 8),
             const Expanded(
-              child: Text('Overall Passing Report',
+              child: Text('Examination Statistics',
                   style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 15,
@@ -618,7 +631,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                       color: _brand)),
             ),
           ]),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
 
           // Required passing rate + edit
           InkWell(
@@ -639,7 +652,47 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
               ]),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
+
+          // Overall passing rate
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('OVERALL PASSING RATE',
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            letterSpacing: 0.6,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[600])),
+                    const SizedBox(height: 2),
+                    Text('${_rate(passRate)}%',
+                        style: const TextStyle(
+                            fontSize: 34,
+                            height: 1.1,
+                            fontWeight: FontWeight.bold,
+                            color: _green)),
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('Failing rate',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+                  Text('${_rate(failRate)}%',
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: _red)),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
 
           // Passed / Failed split bar
           ClipRRect(
@@ -647,39 +700,66 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
             child: SizedBox(
               height: 12,
               child: Row(children: [
-                if (passedCount > 0)
-                  Expanded(flex: passedCount, child: Container(color: _green)),
-                if (failedCount > 0)
-                  Expanded(flex: failedCount, child: Container(color: _red)),
+                if (passers.count > 0)
+                  Expanded(
+                      flex: passers.count, child: Container(color: _green)),
+                if (nonPassers.count > 0)
+                  Expanded(
+                      flex: nonPassers.count, child: Container(color: _red)),
               ]),
             ),
           ),
+          const SizedBox(height: 6),
+          Text('Total examinees: $totalStudents',
+              style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
           const SizedBox(height: 14),
 
-          Row(children: [
-            Expanded(
-              child: _ReportBox(
-                color: _green,
-                icon: Icons.check_circle_rounded,
-                label: 'Passing Rate',
-                rate: '${_pct(double.parse(passRate.toStringAsFixed(1)))}%',
-                detail: '$passedCount of $totalStudents passed',
+          // Passers vs non-passers
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _ReportBox(
+                  color: _green,
+                  icon: Icons.check_circle_rounded,
+                  label: 'Passers',
+                  count: passers.count,
+                  avgScore: avgScoreText(passers),
+                  avgPercent: avgPctText(passers),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _ReportBox(
-                color: _red,
-                icon: Icons.cancel_rounded,
-                label: 'Failing Rate',
-                rate: '${_pct(double.parse(failRate.toStringAsFixed(1)))}%',
-                detail: '$failedCount of $totalStudents failed',
+              const SizedBox(width: 10),
+              Expanded(
+                child: _ReportBox(
+                  color: _red,
+                  icon: Icons.cancel_rounded,
+                  label: 'Non-passers',
+                  count: nonPassers.count,
+                  avgScore: avgScoreText(nonPassers),
+                  avgPercent: avgPctText(nonPassers),
+                ),
               ),
-            ),
-          ]),
+            ],
+          ),
         ],
       ),
     );
+  }
+}
+
+// ── Group stats (passers / non-passers) ──────────────────────────────────────
+class _GroupStats {
+  final int count;
+  final double avgScore;
+  final double avgPercent;
+  const _GroupStats(this.count, this.avgScore, this.avgPercent);
+
+  factory _GroupStats.from(List<_Row> rows) {
+    if (rows.isEmpty) return const _GroupStats(0, 0, 0);
+    final n = rows.length;
+    final s = rows.fold<int>(0, (a, r) => a + r.score) / n;
+    final p = rows.fold<double>(0, (a, r) => a + r.percent) / n;
+    return _GroupStats(n, s, p);
   }
 }
 
@@ -735,16 +815,31 @@ class _ReportBox extends StatelessWidget {
   final Color color;
   final IconData icon;
   final String label;
-  final String rate;
-  final String detail;
+  final int count;
+  final String avgScore;
+  final String avgPercent;
 
   const _ReportBox({
     required this.color,
     required this.icon,
     required this.label,
-    required this.rate,
-    required this.detail,
+    required this.count,
+    required this.avgScore,
+    required this.avgPercent,
   });
+
+  Widget _line(String k, String v) => Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(k, style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+            Text(v,
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -768,12 +863,22 @@ class _ReportBox extends StatelessWidget {
                     color: color)),
           ]),
           const SizedBox(height: 6),
-          Text(rate,
-              style: TextStyle(
-                  fontSize: 22, fontWeight: FontWeight.bold, color: color)),
-          const SizedBox(height: 2),
-          Text(detail,
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text('$count',
+                  style: TextStyle(
+                      fontSize: 24, fontWeight: FontWeight.bold, color: color)),
+              const SizedBox(width: 4),
+              Text(count == 1 ? 'student' : 'students',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Divider(height: 10, color: color.withOpacity(0.25)),
+          _line('Avg score', avgScore),
+          _line('Avg %', avgPercent),
         ],
       ),
     );
