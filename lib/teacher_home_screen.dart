@@ -106,6 +106,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
   // Set to true when this account's Firestore doc has accountType == 'admin'.
   // Drives the extra "Overview" nav item and IndexedStack page — everyone
   // else keeps the exact same Reviews/Modules/Archive/Requests dashboard.
+  // It is also passed to QuizResultsScreen so the Admin-only examination
+  // statistics card is shown for admins only.
   bool _isAdmin = false;
 
   // 0 = Reviews, 1 = Modules, 2 = Archive, 3 = Requests, 4 = Overview (admin only)
@@ -448,7 +450,9 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                       context,
                                       MaterialPageRoute(
                                         builder: (_) => QuizResultsScreen(
-                                            quizId: quizId, quizTitle: title),
+                                            quizId: quizId,
+                                            quizTitle: title,
+                                            isAdmin: _isAdmin),
                                       ),
                                     ),
                                   ),
@@ -465,7 +469,9 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                       context,
                                       MaterialPageRoute(
                                         builder: (_) => QuizResultsScreen(
-                                            quizId: quizId, quizTitle: title),
+                                            quizId: quizId,
+                                            quizTitle: title,
+                                            isAdmin: _isAdmin),
                                       ),
                                     ),
                                     onRestoreModule: _restoreModule,
