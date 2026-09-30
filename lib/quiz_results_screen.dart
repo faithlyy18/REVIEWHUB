@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// QuizResultsScreen — all student submissions for a quiz.
+/// QuizResultsScreen — all student submissions for a review (quiz).
 ///
 /// LAYOUT
 /// - A compact row of four stat tiles (Submissions, Average, Highest, Lowest)
@@ -14,7 +14,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// - Filter chips: All / Passed / Failed.
 /// - Results sorted by score, highest first (ties: earlier submission first,
 ///   tied scores share a rank).
-///   * Wide screens  → a six-column table (Rank, Student, Subject/Quiz,
+///   * Wide screens  → a six-column table (Rank, Student, Subject/Review,
 ///     Score, Date & Time, Status) that fits without horizontal scrolling.
 ///   * Narrow screens (phones) → one compact card per student.
 class QuizResultsScreen extends StatefulWidget {
@@ -189,7 +189,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Quiz Results',
+            const Text('Review Results',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             Text(widget.quizTitle,
                 style: const TextStyle(fontSize: 12, color: Colors.white70),
@@ -396,7 +396,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
             Text('No submissions yet.',
                 style: TextStyle(color: Colors.grey[600], fontSize: 16)),
             const SizedBox(height: 4),
-            Text("Students haven't taken this quiz yet.",
+            Text("Students haven't taken this review yet.",
                 style: TextStyle(color: Colors.grey[400], fontSize: 13)),
           ],
         ),
@@ -724,7 +724,12 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
       ),
       children: [
         for (final h in const [
-          'Rank', 'Student', 'Subject / quiz', 'Score', 'Date and time', 'Status'
+          'Rank',
+          'Student',
+          'Subject / review',
+          'Score',
+          'Date and time',
+          'Status'
         ])
           cell(Text(h, style: headStyle), v: 9),
       ],
