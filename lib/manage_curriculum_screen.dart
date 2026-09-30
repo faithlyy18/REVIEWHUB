@@ -13,10 +13,12 @@ import 'curriculum_repo.dart';
 //                                archive / restore ANY subject, including the
 //                                BS Criminology subjects. Nothing is locked,
 //                                because the curriculum can change over time.
-//                                Subjects are never deleted: when a subject
-//                                is no longer part of the curriculum it is
-//                                moved to the Archived tab, and it can be
-//                                restored from there at any time.
+//                                When a subject is no longer part of the
+//                                curriculum it is moved to the Archived tab.
+//                                From there the admin can Restore it (back to
+//                                Active) or Delete it permanently; both ask
+//                                for confirmation first. "Add Subject" is only
+//                                shown on the Active tab.
 //   • showSubjectPicker()      — the bottom sheet used by Create Review.
 //                                Reads the LIVE curriculum; instructors can
 //                                only pick from it. Admins additionally see
@@ -810,11 +812,39 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
   }
 
   Future<void> _restore(Subject s) async {
+    final ok = await _confirm(
+      title: 'Restore Subject',
+      message:
+          'Are you sure you want to restore this subject?\n\n"${s.label}" '
+          'will be moved back to the Active curriculum.',
+      confirmLabel: 'Restore',
+      color: _kIndigo,
+    );
+    if (ok != true) return;
     try {
       await CurriculumRepo.restoreSubject(s.id);
       _snack('${s.code} restored to Active.');
     } catch (e) {
       _snack('Could not restore: $e', error: true);
+    }
+  }
+
+  Future<void> _deleteForever(Subject s) async {
+    final ok = await _confirm(
+      title: 'Delete Permanently',
+      message:
+          'Are you sure you want to permanently delete this subject?\n\n'
+          '"${s.label}" will be removed for good. Existing reviews keep '
+          'their saved subject name. This cannot be undone.',
+      confirmLabel: 'Delete',
+      color: Colors.red,
+    );
+    if (ok != true) return;
+    try {
+      await CurriculumRepo.deleteSubject(s.id);
+      _snack('${s.code} permanently deleted.');
+    } catch (e) {
+      _snack('Could not delete: $e', error: true);
     }
   }
 
@@ -924,18 +954,31 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
                     child: Stack(
                       children: [
                         Positioned.fill(child: content),
+                        // "Add Subject" only belongs to the Active tab: new
+                        // subjects always go into the active curriculum.
                         Positioned(
                           right: 16,
                           bottom: 16,
-                          child: FloatingActionButton.extended(
-                            heroTag: 'addSubject',
-                            backgroundColor: _kIndigo,
-                            foregroundColor: Colors.white,
-                            icon: const Icon(Icons.add_rounded),
-                            label: const Text('Add Subject',
-                                style: TextStyle(fontWeight: FontWeight.bold)),
-                            onPressed: _add,
-                          ),
+                          child: Builder(builder: (ctx) {
+                            final fab = FloatingActionButton.extended(
+                              heroTag: 'addSubject',
+                              backgroundColor: _kIndigo,
+                              foregroundColor: Colors.white,
+                              icon: const Icon(Icons.add_rounded),
+                              label: const Text('Add Subject',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold)),
+                              onPressed: _add,
+                            );
+                            final anim =
+                                DefaultTabController.of(ctx).animation;
+                            if (anim == null) return fab;
+                            return AnimatedBuilder(
+                              animation: anim,
+                              builder: (_, __) =>
+                                  anim.value < 0.5 ? fab : const SizedBox.shrink(),
+                            );
+                          }),
                         ),
                       ],
                     ),
@@ -1113,7 +1156,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
       });
 
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
       itemCount: sorted.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, i) {
@@ -1121,6 +1164,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
         return _ArchivedTile(
           subject: s,
           onRestore: () => _restore(s),
+          onDelete: () => _deleteForever(s),
         );
       },
     );
@@ -1175,9 +1219,11 @@ class _ActiveTile extends StatelessWidget {
 class _ArchivedTile extends StatelessWidget {
   final Subject subject;
   final VoidCallback onRestore;
+  final VoidCallback onDelete;
   const _ArchivedTile({
     required this.subject,
     required this.onRestore,
+    required this.onDelete,
   });
 
   @override
@@ -1206,11 +1252,23 @@ class _ArchivedTile extends StatelessWidget {
               ],
             ),
           ),
-          _SmallAction(
-              label: 'Restore',
-              icon: Icons.restore_rounded,
-              color: _kIndigo,
-              onTap: onRestore),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _SmallAction(
+                  label: 'Restore',
+                  icon: Icons.restore_rounded,
+                  color: _kIndigo,
+                  onTap: onRestore),
+              const SizedBox(height: 6),
+              _SmallAction(
+                  label: 'Delete',
+                  icon: Icons.delete_forever_rounded,
+                  color: Colors.red.shade600,
+                  onTap: onDelete),
+            ],
+          ),
         ]),
       );
 }
