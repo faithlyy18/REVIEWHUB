@@ -10,9 +10,13 @@ import 'curriculum_repo.dart';
 // This file holds everything curriculum-related on the UI side:
 //
 //   • ManageCurriculumScreen   — admin-only screen: add subjects, and edit /
-//                                archive / restore / delete the ones the admin
-//                                added. The official BS Criminology subjects
-//                                are LOCKED and can't be changed or removed.
+//                                archive / restore ANY subject, including the
+//                                BS Criminology subjects. Nothing is locked,
+//                                because the curriculum can change over time.
+//                                Subjects are never deleted: when a subject
+//                                is no longer part of the curriculum it is
+//                                moved to the Archived tab, and it can be
+//                                restored from there at any time.
 //   • showSubjectPicker()      — the bottom sheet used by Create Review.
 //                                Reads the LIVE curriculum; instructors can
 //                                only pick from it. Admins additionally see
@@ -25,8 +29,7 @@ import 'curriculum_repo.dart';
 // Access control: the screen re-checks the admin flag itself and shows a
 // "not allowed" message otherwise. That only protects the UI — also add the
 // Firestore rules for the `subjects` collection so instructors can't write
-// to it even by calling the API directly, and so core subjects can't be
-// modified or deleted.
+// to it even by calling the API directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Color _kIndigo = Color(0xFF1A237E);
@@ -720,22 +723,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
   void initState() {
     super.initState();
     _stream = CurriculumRepo.streamEverything();
-    _readyFuture = _init();
-  }
-
-  // Confirms the account is an admin, then (admin only) makes sure every
-  // official BS Criminology subject exists in Firestore, is locked
-  // (isCore) and is not archived.
-  Future<bool> _init() async {
-    final admin = await isCurrentUserAdmin();
-    if (admin) {
-      try {
-        await CurriculumRepo.ensureCoreSubjects();
-      } catch (_) {
-        // Non-fatal: the stream below will surface any real problem.
-      }
-    }
-    return admin;
+    _readyFuture = isCurrentUserAdmin();
   }
 
   void _snack(String msg, {bool error = false}) {
@@ -797,32 +785,25 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
   }
 
   Future<void> _edit(Subject s) async {
-    if (s.isCore) {
-      _snack('Official curriculum subjects cannot be edited.', error: true);
-      return;
-    }
     final saved = await showSubjectEditor(context, existing: s);
     if (saved == true) _snack('Subject updated.');
   }
 
   Future<void> _archive(Subject s) async {
-    if (s.isCore) {
-      _snack('Official curriculum subjects cannot be archived.', error: true);
-      return;
-    }
     final ok = await _confirm(
       title: 'Archive Subject',
       message:
-          '"${s.label}" will be hidden from the subject list when creating '
-          'reviews. Existing reviews keep their subject. You can restore it '
-          'anytime from the Archived tab.',
+          '"${s.label}" is no longer part of the current curriculum. It will '
+          'be moved to the Archived tab and hidden from the subject list when '
+          'creating reviews. Existing reviews keep their subject. You can '
+          'restore it anytime.',
       confirmLabel: 'Archive',
       color: _kArchive,
     );
     if (ok != true) return;
     try {
       await CurriculumRepo.archiveSubject(s.id);
-      _snack('${s.code} archived.');
+      _snack('${s.code} moved to Archived.');
     } catch (e) {
       _snack('Could not archive: $e', error: true);
     }
@@ -831,31 +812,9 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
   Future<void> _restore(Subject s) async {
     try {
       await CurriculumRepo.restoreSubject(s.id);
-      _snack('${s.code} restored.');
+      _snack('${s.code} restored to Active.');
     } catch (e) {
       _snack('Could not restore: $e', error: true);
-    }
-  }
-
-  Future<void> _deleteForever(Subject s) async {
-    if (s.isCore) {
-      _snack('Official curriculum subjects cannot be deleted.', error: true);
-      return;
-    }
-    final ok = await _confirm(
-      title: 'Delete Permanently',
-      message:
-          'This permanently removes "${s.label}" from the curriculum. '
-          'Existing reviews keep their saved subject name. This cannot be undone.',
-      confirmLabel: 'Delete Forever',
-      color: Colors.red,
-    );
-    if (ok != true) return;
-    try {
-      await CurriculumRepo.deleteSubject(s.id);
-      _snack('${s.code} permanently deleted.');
-    } catch (e) {
-      _snack('Could not delete: $e', error: true);
     }
   }
 
@@ -913,10 +872,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
           builder: (context, snap) {
             final all = snap.data ?? const <Subject>[];
             final active = all.where((s) => !s.archived).toList();
-            // Core subjects are never archived, so they never appear here and
-            // can never reach the "Delete Forever" button.
-            final archived =
-                all.where((s) => s.archived && !s.isCore).toList();
+            final archived = all.where((s) => s.archived).toList();
 
             final Widget content = snap.hasError
                 ? Center(
@@ -1025,7 +981,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
     );
   }
 
-  Widget _buildCoreNotice() => Container(
+  Widget _buildInfoNotice() => Container(
         margin: const EdgeInsets.fromLTRB(14, 4, 14, 0),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
@@ -1033,13 +989,13 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(children: [
-          const Icon(Icons.lock_outline_rounded, size: 15, color: _kIndigo),
+          const Icon(Icons.info_outline_rounded, size: 15, color: _kIndigo),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Subjects with a lock are the official BS Criminology '
-              'curriculum and cannot be edited or removed. Tap "Add Subject" '
-              'to add more.',
+              'These are the subjects in the current curriculum. If a subject '
+              'is no longer offered, archive it. You can restore it anytime '
+              'from the Archived tab.',
               style: TextStyle(fontSize: 11, color: Colors.grey[800]),
             ),
           ),
@@ -1095,7 +1051,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
     return Column(
       children: [
         _buildYearChips(),
-        _buildCoreNotice(),
+        _buildInfoNotice(),
         Expanded(
           child: rows.isEmpty
               ? Center(
@@ -1103,7 +1059,7 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
                     padding: const EdgeInsets.all(24),
                     child: Text(
                       active.isEmpty
-                          ? 'No subjects yet.\nTap "Add Subject" to build the curriculum.'
+                          ? 'No active subjects.\nTap "Add Subject" or restore one from the Archived tab.'
                           : 'No subjects for $_yearFilter.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey[500], fontSize: 14),
@@ -1134,7 +1090,8 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
               Text('No archived subjects.',
                   style: TextStyle(color: Colors.grey[500], fontSize: 15)),
               const SizedBox(height: 6),
-              Text('Subjects you archive will appear here.',
+              Text('Subjects no longer in the curriculum will appear here.',
+                  textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey[400], fontSize: 13)),
             ],
           ),
@@ -1142,16 +1099,28 @@ class _ManageCurriculumScreenState extends State<ManageCurriculumScreen> {
       );
     }
 
+    // Sort by year, then semester, then code so the list is easy to scan.
+    final sorted = [...archived]..sort((a, b) {
+        final y = CurriculumRepo.yearLevels
+            .indexOf(a.yearLevel)
+            .compareTo(CurriculumRepo.yearLevels.indexOf(b.yearLevel));
+        if (y != 0) return y;
+        final s = CurriculumRepo.semesters
+            .indexOf(a.semester)
+            .compareTo(CurriculumRepo.semesters.indexOf(b.semester));
+        if (s != 0) return s;
+        return a.code.compareTo(b.code);
+      });
+
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
-      itemCount: archived.length,
+      itemCount: sorted.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, i) {
-        final s = archived[i];
+        final s = sorted[i];
         return _ArchivedTile(
           subject: s,
           onRestore: () => _restore(s),
-          onDelete: () => _deleteForever(s),
         );
       },
     );
@@ -1188,30 +1157,17 @@ class _ActiveTile extends StatelessWidget {
             child: Text(subject.description,
                 style: const TextStyle(fontSize: 13, color: Colors.black87)),
           ),
-          if (subject.isCore)
-            // Official curriculum subject: locked, no edit / archive / delete.
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: Tooltip(
-                message:
-                    'Official BS Criminology subject: cannot be edited or removed',
-                child: Icon(Icons.lock_outline_rounded,
-                    size: 19, color: Colors.grey),
-              ),
-            )
-          else ...[
-            IconButton(
-              tooltip: 'Edit',
-              icon: const Icon(Icons.edit_outlined, size: 19, color: _kIndigo),
-              onPressed: onEdit,
-            ),
-            IconButton(
-              tooltip: 'Archive',
-              icon: const Icon(Icons.inventory_2_outlined,
-                  size: 19, color: _kArchive),
-              onPressed: onArchive,
-            ),
-          ],
+          IconButton(
+            tooltip: 'Edit',
+            icon: const Icon(Icons.edit_outlined, size: 19, color: _kIndigo),
+            onPressed: onEdit,
+          ),
+          IconButton(
+            tooltip: 'Archive',
+            icon: const Icon(Icons.inventory_2_outlined,
+                size: 19, color: _kArchive),
+            onPressed: onArchive,
+          ),
         ]),
       );
 }
@@ -1219,11 +1175,9 @@ class _ActiveTile extends StatelessWidget {
 class _ArchivedTile extends StatelessWidget {
   final Subject subject;
   final VoidCallback onRestore;
-  final VoidCallback onDelete;
   const _ArchivedTile({
     required this.subject,
     required this.onRestore,
-    required this.onDelete,
   });
 
   @override
@@ -1252,23 +1206,11 @@ class _ArchivedTile extends StatelessWidget {
               ],
             ),
           ),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              _SmallAction(
-                  label: 'Restore',
-                  icon: Icons.restore_rounded,
-                  color: _kIndigo,
-                  onTap: onRestore),
-              const SizedBox(height: 4),
-              _SmallAction(
-                  label: 'Delete',
-                  icon: Icons.delete_forever_rounded,
-                  color: Colors.red.shade600,
-                  onTap: onDelete),
-            ],
-          ),
+          _SmallAction(
+              label: 'Restore',
+              icon: Icons.restore_rounded,
+              color: _kIndigo,
+              onTap: onRestore),
         ]),
       );
 }
@@ -1289,18 +1231,18 @@ class _SmallAction extends StatelessWidget {
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(7),
             border: Border.all(color: color.withValues(alpha: 0.25)),
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, size: 11, color: color),
-            const SizedBox(width: 3),
+            Icon(icon, size: 13, color: color),
+            const SizedBox(width: 4),
             Text(label,
                 style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.bold, color: color)),
+                    fontSize: 11, fontWeight: FontWeight.bold, color: color)),
           ]),
         ),
       );
