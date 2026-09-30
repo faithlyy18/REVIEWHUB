@@ -4,24 +4,25 @@ import 'review_results_screen.dart';
 
 /// QuizResultsScreen — results for ONE specific quiz.
 ///
+/// Admins see a "Quiz Results | Review Results" switcher directly under the
+/// app bar. Tapping "Review Results" swaps this screen for the examination
+/// statistics of the SAME quiz (same quizId → same examinees). The swap uses
+/// pushReplacement, so the back arrow still returns to wherever the admin
+/// came from (no stack of alternating screens).
+///
 /// LAYOUT
 /// - A compact row of four stat tiles (Submissions, Average, Highest, Lowest).
 ///   Highest/Lowest are tappable and show the names.
 /// - Filter chips: All / Passed / Failed.
 /// - Results sorted by score, highest first (ties: earlier submission first,
 ///   tied scores share a rank).
-///   * Wide screens  → a six-column table (Rank, Student, Subject/Quiz,
-///     Score, Date & Time, Status) that fits without horizontal scrolling.
+///   * Wide screens  → a six-column table.
 ///   * Narrow screens (phones) → one compact card per student.
-///
-/// The overall examination statistics (overall passing rate, passers /
-/// non-passers, group averages) live in ReviewResultsScreen, NOT here.
 class QuizResultsScreen extends StatefulWidget {
   final String quizId;
   final String quizTitle;
 
-  /// Admin accounts get a "Review Results" button in the app bar that opens
-  /// the examination statistics of THIS quiz (ReviewResultsScreen).
+  /// Admin accounts get the Quiz Results / Review Results switcher.
   final bool isAdmin;
 
   const QuizResultsScreen({
@@ -48,6 +49,24 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
   static const double _tableBreakpoint = 700;
 
   _ResultFilter _filter = _ResultFilter.all;
+
+  // ── Navigation ───────────────────────────────────────────────────────────
+  /// Swap to the Review Results report for THIS quiz.
+  void _openReviewResults() {
+    Navigator.pushReplacement(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => ReviewResultsScreen(
+          quizId: widget.quizId,
+          quizTitle: widget.quizTitle,
+          isAdmin: widget.isAdmin,
+        ),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+        transitionDuration: const Duration(milliseconds: 150),
+      ),
+    );
+  }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   String _fmtDate(Timestamp? ts) {
@@ -137,29 +156,14 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                 overflow: TextOverflow.ellipsis),
           ],
         ),
-        // Admin only: opens the overall examination statistics report.
-        actions: [
-          if (widget.isAdmin)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: TextButton.icon(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => ReviewResultsScreen(
-                        quizId: widget.quizId,
-                        quizTitle: widget.quizTitle,
-                        isAdmin: true,
-                      )),
-                ),
-                icon: const Icon(Icons.analytics_outlined,
-                    size: 18, color: Colors.white),
-                label: const Text('Review Results',
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w600)),
-              ),
-            ),
-        ],
+        // Admin only: always-visible switcher to the Review Results report.
+        bottom: widget.isAdmin
+            ? _ViewSwitcher(
+                quizActive: true,
+                onQuizTap: () {},
+                onReviewTap: _openReviewResults,
+              )
+            : null,
       ),
       // Outer stream: the quiz doc (subject + required passing %).
       body: StreamBuilder<DocumentSnapshot>(
@@ -666,6 +670,64 @@ class _Row {
 }
 
 // ── Small widgets ────────────────────────────────────────────────────────────
+
+/// Two-tab switcher shown under the app bar: Quiz Results | Review Results.
+/// The tab for the screen you are on is highlighted and inert.
+class _ViewSwitcher extends StatelessWidget implements PreferredSizeWidget {
+  final bool quizActive;
+  final VoidCallback onQuizTap;
+  final VoidCallback onReviewTap;
+
+  const _ViewSwitcher({
+    required this.quizActive,
+    required this.onQuizTap,
+    required this.onReviewTap,
+  });
+
+  @override
+  Size get preferredSize => const Size.fromHeight(44);
+
+  @override
+  Widget build(BuildContext context) {
+    Widget seg(IconData icon, String label, bool active, VoidCallback onTap) {
+      final color = active ? Colors.white : Colors.white70;
+      return Expanded(
+        child: InkWell(
+          onTap: active ? null : onTap,
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                    color: active ? Colors.white : Colors.transparent,
+                    width: 3),
+              ),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 8),
+              Text(label,
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 13.5,
+                      fontWeight: active ? FontWeight.bold : FontWeight.w500)),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 44,
+      child: Row(children: [
+        seg(Icons.list_alt_rounded, 'Quiz Results', quizActive, onQuizTap),
+        seg(Icons.analytics_outlined, 'Review Results', !quizActive,
+            onReviewTap),
+      ]),
+    );
+  }
+}
+
 class _KpiTile extends StatelessWidget {
   final IconData icon;
   final String label;

@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'quiz_results_screen.dart';
 
 /// ReviewResultsScreen — examination statistics for ONE selected review/quiz.
 ///
 /// Everything here is calculated ONLY from the submissions of [quizId]
 /// (e.g. 4 submissions → 4 examinees), never from all quizzes in the system.
+///
+/// A "Quiz Results | Review Results" switcher sits directly under the app bar.
+/// Tapping "Quiz Results" swaps back (pushReplacement) to the results list of
+/// the SAME quiz, so the two screens behave like two tabs of one report and
+/// the back arrow still returns to wherever the admin came from.
 ///
 /// LAYOUT
 /// - Four summary tiles: Total Examinees · Overall Average · Passing Average
@@ -21,7 +27,8 @@ class ReviewResultsScreen extends StatelessWidget {
   final String quizId;
   final String quizTitle;
 
-  /// Kept only so callers that pass `isAdmin:` still compile.
+  /// Passed back to QuizResultsScreen when switching, so the switcher keeps
+  /// showing there.
   final bool isAdmin;
 
   const ReviewResultsScreen({
@@ -59,6 +66,23 @@ class ReviewResultsScreen extends StatelessWidget {
     return '$h12:$mm $ampm';
   }
 
+  /// Swap to the Quiz Results list for THIS quiz.
+  void _openQuizResults(BuildContext context) {
+    Navigator.pushReplacement(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => QuizResultsScreen(
+          quizId: quizId,
+          quizTitle: quizTitle,
+          isAdmin: true,
+        ),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+        transitionDuration: const Duration(milliseconds: 150),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -76,6 +100,11 @@ class ReviewResultsScreen extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),
           ],
+        ),
+        bottom: _ViewSwitcher(
+          quizActive: false,
+          onQuizTap: () => _openQuizResults(context),
+          onReviewTap: () {},
         ),
       ),
       // Outer stream: the quiz doc (subject + required passing %).
@@ -487,6 +516,64 @@ class _Row {
 }
 
 // ── Small widgets ────────────────────────────────────────────────────────────
+
+/// Two-tab switcher shown under the app bar: Quiz Results | Review Results.
+/// The tab for the screen you are on is highlighted and inert.
+class _ViewSwitcher extends StatelessWidget implements PreferredSizeWidget {
+  final bool quizActive;
+  final VoidCallback onQuizTap;
+  final VoidCallback onReviewTap;
+
+  const _ViewSwitcher({
+    required this.quizActive,
+    required this.onQuizTap,
+    required this.onReviewTap,
+  });
+
+  @override
+  Size get preferredSize => const Size.fromHeight(44);
+
+  @override
+  Widget build(BuildContext context) {
+    Widget seg(IconData icon, String label, bool active, VoidCallback onTap) {
+      final color = active ? Colors.white : Colors.white70;
+      return Expanded(
+        child: InkWell(
+          onTap: active ? null : onTap,
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                    color: active ? Colors.white : Colors.transparent,
+                    width: 3),
+              ),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 8),
+              Text(label,
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 13.5,
+                      fontWeight: active ? FontWeight.bold : FontWeight.w500)),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 44,
+      child: Row(children: [
+        seg(Icons.list_alt_rounded, 'Quiz Results', quizActive, onQuizTap),
+        seg(Icons.analytics_outlined, 'Review Results', !quizActive,
+            onReviewTap),
+      ]),
+    );
+  }
+}
+
 class _StatTile extends StatelessWidget {
   final IconData icon;
   final String label;
