@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'register_screen.dart';
 import 'home_screen.dart';
+import 'google_account_notice.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -468,7 +469,14 @@ class _LoginScreenState extends State<LoginScreen>
                 style: const TextStyle(
                     fontSize: 13, color: Color(0xFF9E9E9E)),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 18),
+
+              // Info: which account to use
+              const GoogleAccountNotice(
+                message: 'Use your Google account to sign in to your '
+                    'BISU Exam Reviewer account.',
+              ),
+              const SizedBox(height: 16),
 
               // Email
               TextFormField(

@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'google_account_notice.dart';
 
 // NOTE: the Google Drive "connect account" step that used to live on this
 // screen (Instructor/Admin only) has been removed. Module uploads now use
@@ -803,6 +804,13 @@ class _RegisterScreenState extends State<RegisterScreen>
             ),
           ],
 
+          const SizedBox(height: 14),
+
+          // Info: which email/account to use
+          const GoogleAccountNotice(
+            message: 'Use your Google account (Gmail) email to register. '
+                'You will use this same email to sign in.',
+          ),
           const SizedBox(height: 14),
 
           TextFormField(
