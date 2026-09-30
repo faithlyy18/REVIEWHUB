@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:file_picker/file_picker.dart';
 import 'google_drive_service.dart';
+import 'curriculum_repo.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODULE SUBJECTS (clusters)
@@ -20,6 +21,18 @@ import 'google_drive_service.dart';
 //
 // Modules keep referencing their subject through `cluster: <code>`, so
 // existing modules are unaffected.
+//
+// NEW: each module can ALSO be linked to one curriculum subject, e.g. a CDI
+// module is linked to "CDI 3". This is stored on the module as
+//   subject        (e.g. 'CDI 3')
+//   subjectLabel   (e.g. 'Specialized Crime Investigation 2 …')
+// A curriculum subject belongs to a cluster when its code starts with the
+// cluster code followed by a space ("CDI 3" belongs to "CDI"). Modules saved
+// before this change have no `subject` field; they still work and simply show
+// their cluster only.
+//
+// Students see a confirmation dialog ("This module is from CDI") before a
+// module is opened.
 //
 // Color/icon are NOT stored — they're derived from the cluster's `code`.
 //
@@ -89,6 +102,15 @@ Color _colorForCode(String code) =>
 
 IconData _iconForCode(String code) =>
     _iconPalette[code.hashCode.abs() % _iconPalette.length];
+
+/// True when the curriculum subject [subjectCode] (e.g. "CDI 3") belongs to
+/// the module cluster [clusterCode] (e.g. "CDI").
+bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
+  final s = subjectCode.trim().toUpperCase();
+  final c = clusterCode.trim().toUpperCase();
+  if (c.isEmpty) return false;
+  return s.startsWith('$c ');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DEFAULT MODULE SUBJECTS (protected)
@@ -1096,6 +1118,11 @@ class _SubjectMenuRow extends StatelessWidget {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Module Card
+//
+// Shows the module's subject group (e.g. CDI) and, when set, its curriculum
+// subject (e.g. CDI 3). For STUDENTS, tapping "Read Module" first shows a
+// confirmation dialog saying which subject the module belongs to; the module
+// only opens after the student taps "Open Module". Teachers preview directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModuleCard extends StatefulWidget {
@@ -1156,13 +1183,153 @@ class _ModuleCardState extends State<_ModuleCard> {
     }
   }
 
+  /// Students: confirm which subject the module belongs to, then open.
+  /// Teachers: open straight away.
+  Future<void> _onOpenPressed(BuildContext context, String fileUrl) async {
+    if (widget.isTeacher) {
+      await _open(context, fileUrl);
+      return;
+    }
+
+    final clusterCode = widget.data['cluster'] as String? ?? '';
+    // Old modules without any subject info open directly.
+    if (clusterCode.isEmpty) {
+      await _open(context, fileUrl);
+      return;
+    }
+
+    final title = widget.data['title'] as String? ?? 'Untitled Module';
+    final clusterLabel = widget.data['clusterLabel'] as String? ?? clusterCode;
+    final subjectCode = widget.data['subject'] as String? ?? '';
+    final subjectLabel = widget.data['subjectLabel'] as String? ?? '';
+    final color = _colorForCode(clusterCode);
+    final icon = _iconForCode(clusterCode);
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        contentPadding: const EdgeInsets.fromLTRB(22, 22, 22, 8),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: color.withValues(alpha: 0.35)),
+                  ),
+                  child: Icon(icon, color: color, size: 30),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Center(
+                child: Text(
+                  'This module is from $clusterCode',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Center(
+                child: Text(
+                  clusterLabel,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: color.withValues(alpha: 0.25)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (subjectCode.isNotEmpty) ...[
+                      Text('Curriculum subject',
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey[600])),
+                      const SizedBox(height: 2),
+                      Text(
+                        subjectLabel.isNotEmpty
+                            ? '$subjectCode — $subjectLabel'
+                            : subjectCode,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: color),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    Text('Module',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[600])),
+                    const SizedBox(height: 2),
+                    Text(title,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF1A237E))),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.open_in_browser_rounded, size: 16),
+            label: const Text('Open Module'),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed == true && context.mounted) {
+      await _open(context, fileUrl);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = widget.data['title'] as String? ?? 'Untitled Module';
     final clusterCode = widget.data['cluster'] as String? ?? '';
     final clusterLabel = widget.data['clusterLabel'] as String? ?? clusterCode;
+    final subjectCode = widget.data['subject'] as String? ?? '';
+    final subjectLabel = widget.data['subjectLabel'] as String? ?? '';
     final fileUrl = widget.data['fileUrl'] as String? ?? '';
     final hasCluster = clusterCode.isNotEmpty;
+    final hasSubject = subjectCode.isNotEmpty;
     final clusterColor =
         hasCluster ? _colorForCode(clusterCode) : const Color(0xFF1A237E);
     final clusterIcon =
@@ -1218,8 +1385,17 @@ class _ModuleCardState extends State<_ModuleCard> {
                           runSpacing: 4,
                           children: [
                             _chip(clusterIcon, clusterCode, color: clusterColor),
-                            _chip(Icons.menu_book_rounded, clusterLabel,
-                                color: clusterColor, maxWidth: 200),
+                            if (hasSubject)
+                              _chip(
+                                  Icons.bookmark_rounded,
+                                  subjectLabel.isNotEmpty
+                                      ? '$subjectCode · $subjectLabel'
+                                      : subjectCode,
+                                  color: clusterColor,
+                                  maxWidth: 240)
+                            else
+                              _chip(Icons.menu_book_rounded, clusterLabel,
+                                  color: clusterColor, maxWidth: 200),
                             if (_teacherName != null)
                               _chip(Icons.person_rounded, _teacherName!,
                                   color: clusterColor, maxWidth: 160),
@@ -1258,7 +1434,9 @@ class _ModuleCardState extends State<_ModuleCard> {
             ),
           ),
           InkWell(
-            onTap: fileUrl.isNotEmpty ? () => _open(context, fileUrl) : null,
+            onTap: fileUrl.isNotEmpty
+                ? () => _onOpenPressed(context, fileUrl)
+                : null,
             borderRadius:
                 const BorderRadius.vertical(bottom: Radius.circular(14)),
             child: Container(
@@ -1993,6 +2171,11 @@ class _SmallActionButton extends StatelessWidget {
 // subject added (or archived/restored) while this sheet is open shows up
 // right away. The "Add / manage subjects" button opens Manage Subjects.
 // This is now the ONLY entry point to subject management.
+//
+// NEW: after choosing a subject group (e.g. CDI), a "Curriculum subject"
+// dropdown lists that group's curriculum subjects (CDI 1 … CDI 9) from the
+// LIVE curriculum. It is required when the group has curriculum subjects, and
+// hidden when it has none (e.g. ENG or a custom subject).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
@@ -2016,7 +2199,9 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   final _titleController = TextEditingController();
 
   String? _selectedCode;
+  String? _selectedSubjectCode; // curriculum subject, e.g. 'CDI 3'
   late List<_Cluster> _clusters;
+  List<Subject> _curriculum = const [];
   bool _saving = false;
   bool _connecting = false;
   String? _driveEmail;
@@ -2033,6 +2218,14 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       if (c.code == _selectedCode) return c;
     }
     return _clusters.isNotEmpty ? _clusters.first : null;
+  }
+
+  /// Curriculum subjects that belong to [cluster] (e.g. CDI 1 … CDI 9).
+  List<Subject> _curriculumFor(_Cluster? cluster) {
+    if (cluster == null) return const [];
+    return _curriculum
+        .where((s) => _subjectBelongsToCluster(s.code, cluster.code))
+        .toList();
   }
 
   @override
@@ -2128,6 +2321,19 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
       _snack('No subjects available yet. Tap "Add / manage subjects" first.');
       return;
     }
+
+    // Curriculum subject: required whenever this group has any.
+    final options = _curriculumFor(cluster);
+    Subject? curriculumSubject;
+    for (final s in options) {
+      if (s.code == _selectedSubjectCode) curriculumSubject = s;
+    }
+    if (options.isNotEmpty && curriculumSubject == null) {
+      _snack('Please choose which ${cluster.code} subject this module '
+          'belongs to (e.g. ${options.first.code}).');
+      return;
+    }
+
     if (title.isEmpty) {
       _snack('Please enter a module title.');
       return;
@@ -2151,6 +2357,9 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
         'title': title,
         'cluster': cluster.code,
         'clusterLabel': cluster.label,
+        if (curriculumSubject != null) 'subject': curriculumSubject.code,
+        if (curriculumSubject != null)
+          'subjectLabel': curriculumSubject.description,
         'fileUrl': result.viewUrl,
         'driveFileId': result.fileId,
         'fileName': result.fileName,
@@ -2219,7 +2428,14 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   return GestureDetector(
                     onTap: _saving
                         ? null
-                        : () => setState(() => _selectedCode = c.code),
+                        : () => setState(() {
+                              if (_selectedCode != c.code) {
+                                // A different group has different curriculum
+                                // subjects, so clear the previous choice.
+                                _selectedSubjectCode = null;
+                              }
+                              _selectedCode = c.code;
+                            }),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       padding: const EdgeInsets.symmetric(
@@ -2283,6 +2499,67 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
               ),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  /// Dropdown of the live curriculum subjects (CDI 1 … CDI 9) that belong to
+  /// the chosen subject group. Hidden when the group has none.
+  Widget _buildCurriculumSubjectPicker() {
+    return StreamBuilder<List<Subject>>(
+      stream: CurriculumRepo.streamAll(),
+      builder: (context, snap) {
+        if (snap.hasData) _curriculum = snap.data!;
+
+        final cluster = _selectedCluster;
+        final options = _curriculumFor(cluster);
+        if (cluster == null || options.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final value = options.any((s) => s.code == _selectedSubjectCode)
+            ? _selectedSubjectCode
+            : null;
+
+        return Padding(
+          padding: const EdgeInsets.only(top: 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${cluster.code} Subject (Curriculum)',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF3949AB))),
+              const SizedBox(height: 6),
+              DropdownButtonFormField<String>(
+                value: value,
+                isExpanded: true,
+                decoration: _inputDeco(
+                    'Select ${cluster.code} subject', Icons.bookmark_rounded),
+                items: options
+                    .map((s) => DropdownMenuItem<String>(
+                          value: s.code,
+                          child: Text(
+                            '${s.code} — ${s.description}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ))
+                    .toList(),
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _selectedSubjectCode = v),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Students will be told this module is from '
+                '${cluster.code} before they open it.',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -2383,6 +2660,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                     color: Color(0xFF3949AB))),
             const SizedBox(height: 10),
             _buildSubjectPicker(),
+            _buildCurriculumSubjectPicker(),
             const SizedBox(height: 14),
             ..._buildFileSection(),
             const SizedBox(height: 24),
