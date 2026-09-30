@@ -16,7 +16,7 @@ import 'google_drive_service.dart';
 // The curriculum (CurriculumRepo, numbered subjects such as "CRIM 1") stays in
 // the `subjects` collection. The two features are completely separate:
 //   • Manage Curriculum      -> `subjects`        (curriculum_repo.dart)
-//   • Modules > Manage Subjects -> `moduleSubjects` (this file)
+//   • Add Module > Add / manage subjects -> `moduleSubjects` (this file)
 //
 // Modules keep referencing their subject through `cluster: <code>`, so
 // existing modules are unaffected.
@@ -438,14 +438,6 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  void _openManageSubjects() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-          builder: (_) => ManageModuleSubjectsScreen(isAdmin: _isAdmin)),
-    );
-  }
-
   // ── Archive a module (sets archived: true) ──────────────────────────────
   Future<void> _archiveModule(String docId) async {
     final confirm = await showDialog<bool>(
@@ -516,98 +508,71 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
               ),
             ),
           ),
-          body: Column(
-            children: [
-              // ── Manage Subjects entry point ─────────────────────────
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _openManageSubjects,
-                    icon: const Icon(Icons.tune_rounded, size: 18),
-                    label: const Text('Manage Subjects'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF1A237E),
-                      side: const BorderSide(color: Color(0xFF1A237E)),
-                      backgroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                    ),
+          // The separate "Manage Subjects" button was removed. Subject
+          // management now lives only inside the Add Module flow
+          // ("Add / manage subjects").
+          body: StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('modules')
+                .where('uploadedBy', isEqualTo: _user?.uid)
+                .where('archived', isEqualTo: false)
+                .snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  !snapshot.hasData) {
+                return const Center(
+                    child:
+                        CircularProgressIndicator(color: Color(0xFF1A237E)));
+              }
+
+              final docs = snapshot.data?.docs ?? [];
+
+              docs.sort((a, b) {
+                final aTime = (a.data() as Map<String, dynamic>)['uploadedAt']
+                    as Timestamp?;
+                final bTime = (b.data() as Map<String, dynamic>)['uploadedAt']
+                    as Timestamp?;
+                if (aTime == null && bTime == null) return 0;
+                if (aTime == null) return 1;
+                if (bTime == null) return -1;
+                return bTime.compareTo(aTime);
+              });
+
+              if (docs.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.folder_open_rounded,
+                          size: 72, color: Colors.grey[300]),
+                      const SizedBox(height: 14),
+                      Text('No modules added yet.',
+                          style: TextStyle(
+                              color: Colors.grey[500], fontSize: 15)),
+                      const SizedBox(height: 6),
+                      Text('Tap "Add Module" to get started.',
+                          style: TextStyle(
+                              color: Colors.grey[400], fontSize: 13)),
+                    ],
                   ),
-                ),
-              ),
+                );
+              }
 
-              // ── Module list ─────────────────────────────────────────
-              Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('modules')
-                      .where('uploadedBy', isEqualTo: _user?.uid)
-                      .where('archived', isEqualTo: false)
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting &&
-                        !snapshot.hasData) {
-                      return const Center(
-                          child: CircularProgressIndicator(
-                              color: Color(0xFF1A237E)));
-                    }
-
-                    final docs = snapshot.data?.docs ?? [];
-
-                    docs.sort((a, b) {
-                      final aTime =
-                          (a.data() as Map<String, dynamic>)['uploadedAt']
-                              as Timestamp?;
-                      final bTime =
-                          (b.data() as Map<String, dynamic>)['uploadedAt']
-                              as Timestamp?;
-                      if (aTime == null && bTime == null) return 0;
-                      if (aTime == null) return 1;
-                      if (bTime == null) return -1;
-                      return bTime.compareTo(aTime);
-                    });
-
-                    if (docs.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.folder_open_rounded,
-                                size: 72, color: Colors.grey[300]),
-                            const SizedBox(height: 14),
-                            Text('No modules added yet.',
-                                style: TextStyle(
-                                    color: Colors.grey[500], fontSize: 15)),
-                            const SizedBox(height: 6),
-                            Text('Tap "Add Module" to get started.',
-                                style: TextStyle(
-                                    color: Colors.grey[400], fontSize: 13)),
-                          ],
-                        ),
-                      );
-                    }
-
-                    return ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
-                      itemCount: docs.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
-                      itemBuilder: (context, index) {
-                        final doc = docs[index];
-                        final data = doc.data() as Map<String, dynamic>;
-                        return _ModuleCard(
-                          data: data,
-                          isTeacher: true,
-                          onArchive: () => _archiveModule(doc.id),
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
+              return ListView.separated(
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
+                itemCount: docs.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                itemBuilder: (context, index) {
+                  final doc = docs[index];
+                  final data = doc.data() as Map<String, dynamic>;
+                  return _ModuleCard(
+                    data: data,
+                    isTeacher: true,
+                    onArchive: () => _archiveModule(doc.id),
+                  );
+                },
+              );
+            },
           ),
         );
       },
@@ -618,7 +583,8 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
 // ─────────────────────────────────────────────────────────────────────────────
 // ManageModuleSubjectsScreen
 //
-// Modules > Manage Subjects. Separate from Manage Curriculum.
+// Opened from Add Module > "Add / manage subjects". Separate from Manage
+// Curriculum.
 //   Active tab   : list of module subjects with an Archive button
 //   Archived tab : archived subjects with Restore (and Delete Permanently for
 //                  admins)
@@ -1787,20 +1753,20 @@ class _ManageSubjectRow extends StatelessWidget {
             )
           else
             Tooltip(
-            message: 'Archive',
-            child: GestureDetector(
-              onTap: onArchive,
-              child: Container(
-                padding: const EdgeInsets.all(7),
-                decoration: BoxDecoration(
-                  color: archiveColor.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
+              message: 'Archive',
+              child: GestureDetector(
+                onTap: onArchive,
+                child: Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: archiveColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.inventory_2_outlined,
+                      size: 18, color: archiveColor),
                 ),
-                child: const Icon(Icons.inventory_2_outlined,
-                    size: 18, color: archiveColor),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -2021,6 +1987,7 @@ class _SmallActionButton extends StatelessWidget {
 // The Subject picker is LIVE: it listens to the active module subjects, so a
 // subject added (or archived/restored) while this sheet is open shows up
 // right away. The "Add / manage subjects" button opens Manage Subjects.
+// This is now the ONLY entry point to subject management.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
