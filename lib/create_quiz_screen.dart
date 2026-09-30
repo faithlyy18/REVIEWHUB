@@ -12,8 +12,8 @@ import 'manage_curriculum_screen.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Bold-option marker
 // ─────────────────────────────────────────────────────────────────────────────
-// When we read a DOCX, we prefix any paragraph whose text is mostly bold with
-// this control character before handing it to the parser. It's used to tell
+// When we read a DOCX, we prefix any line whose text is mostly bold with
+// this control character before handing it to the parser. It tells
 // _BulkParser "the instructor marked this option as the correct answer by
 // bolding it" — the character is invisible, never typed by a person, and is
 // stripped back out before the text is shown anywhere.
@@ -24,8 +24,6 @@ const String _kBoldMarker = '\u0007';
 // subject picker sheet lives in manage_curriculum_screen.dart
 // (showSubjectPicker). Subjects are added/removed ONLY from the admin's
 // "Manage Subjects" screen — this page just lets the user pick from the list.
-// The official BS Criminology subjects are always available, and any subject
-// the admin adds for a year level appears here automatically for that year.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _QuestionData — Multiple Choice only
@@ -79,43 +77,51 @@ class _BulkParser {
 
   static List<_QuestionData> parse(String raw) {
     final results = <_QuestionData>[];
-    final lines = raw
+    final nonEmpty = raw
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n')
         .split('\n')
         .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
         .toList();
 
-    final blocks = <List<String>>[];
-    List<String> current = [];
+    if (nonEmpty.isEmpty) return results;
 
-    for (final line in lines) {
-      if (line.isEmpty) continue;
-      if (_isQuestionStart(_stripBold(line)) && current.isNotEmpty) {
-        blocks.add(List.from(current));
+    // No A/B/C/D lines anywhere -> treat every line as a plain question.
+    final hasOptions = nonEmpty.any((l) => _isOptionLine(_stripBold(l)));
+    if (!hasOptions) {
+      for (final l in nonEmpty) {
+        final s = _stripQuestionPrefix(_stripBold(l))
+            .replaceFirst(RegExp(r'^[-•*·]\s+'), '');
+        if (s.isNotEmpty) results.add(_QuestionData(questionText: s));
+      }
+      return results;
+    }
+
+    // Group lines into blocks by STRUCTURE — numbering ("1.", "Q1.") is
+    // optional. A new question begins when:
+    //   • the line looks like a numbered question start, or
+    //   • a plain (non-option, non-answer) line appears after options/answer
+    //     lines have already been seen in the current block.
+    final blocks = <List<String>>[];
+    var current = <String>[];
+    bool seenOption = false;
+
+    for (final line in nonEmpty) {
+      final clean = _stripBold(line);
+      final isOpt = _isOptionLine(clean);
+      final isAns = _isAnswerLine(clean);
+      final startsNew = current.isNotEmpty &&
+          (_isQuestionStart(clean) || (seenOption && !isOpt && !isAns));
+      if (startsNew) {
+        blocks.add(current);
         current = [];
+        seenOption = false;
       }
       current.add(line);
+      if (isOpt || isAns) seenOption = true;
     }
     if (current.isNotEmpty) blocks.add(current);
-
-    if (blocks.length == 1 && !_isQuestionStart(_stripBold(blocks.first.first))) {
-      for (final l in lines.where((l) => l.isNotEmpty)) {
-        final cleaned = _stripBold(l);
-        final stripped = cleaned.replaceFirst(RegExp(r'^[-•*·]\s+'), '');
-        if (stripped.isNotEmpty) {
-          results.add(_QuestionData(questionText: stripped));
-        }
-      }
-      return results;
-    }
-
-    if (blocks.isEmpty) {
-      for (final l in lines.where((l) => l.isNotEmpty)) {
-        results.add(_QuestionData(questionText: _stripBold(l)));
-      }
-      return results;
-    }
 
     for (final block in blocks) {
       final q = _parseBlock(block);
@@ -175,7 +181,7 @@ class _BulkParser {
 
     final options = <String>['', '', '', ''];
     String? answerRaw;
-    int boldIndex = -1;
+    final boldIdxs = <int>[];
 
     for (int i = optionStart; i < lines.length; i++) {
       final l = lines[i];
@@ -188,15 +194,19 @@ class _BulkParser {
             .trim();
         continue;
       }
-      final m = RegExp(r'^\(?([A-Da-d])[\.\)\s]\)?\s*(.+)').firstMatch(l);
+      final m = RegExp(r'^\(?([A-Da-d])[\.\)]\s*(.+)').firstMatch(l);
       if (m != null) {
         final idx = m.group(1)!.toUpperCase().codeUnitAt(0) - 65;
         if (idx >= 0 && idx < 4) {
           options[idx] = m.group(2)!.trim();
-          if (boldFlags[i]) boldIndex = idx;
+          if (boldFlags[i]) boldIdxs.add(idx);
         }
       }
     }
+
+    // Only trust bold when exactly ONE option is bold. If every option is
+    // bold (or several are), the marking is ambiguous, so we leave it unset.
+    final boldIndex = boldIdxs.length == 1 ? boldIdxs.first : -1;
 
     // Bold formatting from the DOCX (the instructor's marked answer) always
     // wins over a separate "Answer:" line when both are present.
@@ -220,8 +230,11 @@ class _BulkParser {
     );
   }
 
+  // An option line must be a letter followed by "." or ")" — a bare space is
+  // NOT accepted, so a question like "A person who..." is not mistaken for
+  // option A.
   static bool _isOptionLine(String line) =>
-      RegExp(r'^\(?[A-Da-d][\.\)\s]\)?\s*.+').hasMatch(line);
+      RegExp(r'^\(?[A-Da-d][\.\)]\s*\S').hasMatch(line);
 
   static bool _isAnswerLine(String line) =>
       RegExp(r'^(answer|ans|key|correct)\s*[\:\-]', caseSensitive: false)
@@ -294,6 +307,83 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
     return result.join('\n');
   }
 
+  // ── Word automatic numbering support ───────────────────────────────────────
+  // Word's auto-numbered / auto-lettered lists do NOT store "1." or "A." in
+  // the text — the label lives in word/numbering.xml. We read the list
+  // formats here so we can rebuild the visible label ("1.", "A.", "a.").
+
+  Map<String, String> _readNumberingFormats(Archive archive) {
+    final out = <String, String>{};
+    try {
+      final files = archive.files.where((x) => x.name == 'word/numbering.xml');
+      if (files.isEmpty) return out;
+      final xml = XmlDocument.parse(utf8.decode(files.first.content as List<int>));
+
+      final abstractFmts = <String, Map<String, String>>{};
+      for (final a in xml.findAllElements('w:abstractNum')) {
+        final id = a.getAttribute('w:abstractNumId');
+        if (id == null) continue;
+        final levels = <String, String>{};
+        for (final lvl in a.findElements('w:lvl')) {
+          final il = lvl.getAttribute('w:ilvl') ?? '0';
+          final fmt = lvl.getElement('w:numFmt')?.getAttribute('w:val');
+          if (fmt != null) levels[il] = fmt;
+        }
+        abstractFmts[id] = levels;
+      }
+
+      for (final n in xml.findAllElements('w:num')) {
+        final numId = n.getAttribute('w:numId');
+        final absId = n.getElement('w:abstractNumId')?.getAttribute('w:val');
+        if (numId == null || absId == null) continue;
+        abstractFmts[absId]?.forEach((il, fmt) {
+          out['$numId:$il'] = fmt;
+        });
+      }
+    } catch (_) {
+      // Numbering is a best-effort extra; ignore any parse trouble.
+    }
+    return out;
+  }
+
+  /// Returns the visible list label for a paragraph ("1. ", "A. ", "a. ") or
+  /// an empty string when the paragraph isn't part of an auto-numbered list.
+  String _autoLabel(
+    XmlElement p,
+    Map<String, String> fmts,
+    Map<String, int> counters,
+  ) {
+    final numPr = p.getElement('w:pPr')?.getElement('w:numPr');
+    if (numPr == null) return '';
+    final numId = numPr.getElement('w:numId')?.getAttribute('w:val');
+    if (numId == null || numId == '0') return '';
+    final ilvl =
+        int.tryParse(numPr.getElement('w:ilvl')?.getAttribute('w:val') ?? '0') ?? 0;
+    final fmt = fmts['$numId:$ilvl'] ?? 'decimal';
+
+    // Starting a shallower item restarts any deeper levels of the same list.
+    counters.removeWhere((k, _) {
+      final parts = k.split(':');
+      return parts[0] == numId && (int.tryParse(parts[1]) ?? 0) > ilvl;
+    });
+
+    final key = '$numId:$ilvl';
+    final n = (counters[key] ?? 0) + 1;
+    counters[key] = n;
+
+    switch (fmt) {
+      case 'bullet':
+      case 'none':
+        return '';
+      case 'upperLetter':
+        return '${String.fromCharCode(65 + (n - 1) % 26)}. ';
+      case 'lowerLetter':
+        return '${String.fromCharCode(97 + (n - 1) % 26)}. ';
+      default:
+        return '$n. ';
+    }
+  }
+
   // ── _pickFile: extracts DOCX text while tracking bold runs, so a bolded
   // option is auto-marked as the correct answer instead of the teacher
   // having to tap A/B/C/D after import. ──────────────────────────────────
@@ -314,16 +404,13 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
         );
         final doc = XmlDocument.parse(utf8.decode(docXml.content as List<int>));
 
+        final numFmts = _readNumberingFormats(archive);
+        final numCounters = <String, int>{};
+
         // Walk each paragraph's runs so we can see which text is bold
-        // (<w:b/> in the run's <w:rPr>). Importantly, a single Word
-        // paragraph can contain MULTIPLE visual lines separated by a
-        // manual line break (<w:br/>) rather than a new paragraph — this
-        // is exactly how most exam DOCX files lay out "A. ... B. ... C.
-        // ... D. ..." as one paragraph with three <w:br/> in between. We
-        // treat every <w:br/> as the start of a new line and track bold
-        // ratio PER LINE (not per paragraph), so each option's own bold
-        // state is captured correctly instead of being averaged away by
-        // its non-bold siblings in the same paragraph.
+        // (<w:b/> in the run's <w:rPr>). A single Word paragraph can contain
+        // MULTIPLE visual lines separated by a manual line break (<w:br/>),
+        // so we track bold ratio PER LINE, not per paragraph.
         final lines = <String>[];
         for (final p in doc.findAllElements('w:p')) {
           final lineBuffers = <StringBuffer>[StringBuffer()];
@@ -344,9 +431,8 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
             }
 
             // A run's children are in document order and can interleave
-            // <w:br/> (line break) with <w:t> (text) — e.g. a single <w:r>
-            // is often "<w:br/><w:t>C. Aircraft Manual</w:t>". Walk them
-            // in order so a break always starts a fresh line.
+            // <w:br/> (line break) with <w:t> (text). Walk them in order so
+            // a break always starts a fresh line.
             for (final child in run.children.whereType<XmlElement>()) {
               final localName = child.name.local;
               if (localName == 'br') {
@@ -363,32 +449,51 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
             }
           }
 
+          // Only advance list counters for paragraphs that actually contain
+          // text, and only add a label when the text doesn't already start
+          // with a typed label such as "A." or "1.".
+          final hasText = lineBuffers.any((b) => b.toString().trim().isNotEmpty);
+          String autoPrefix = '';
+          if (hasText) {
+            autoPrefix = _autoLabel(p, numFmts, numCounters);
+          }
+
+          bool prefixUsed = false;
           for (int i = 0; i < lineBuffers.length; i++) {
             final text = lineBuffers[i].toString();
             if (text.trim().isEmpty) continue;
-            final isBoldLine = lineTotalChars[i] > 0 && lineBoldChars[i] / lineTotalChars[i] > 0.5;
-            lines.add(isBoldLine ? '$_kBoldMarker$text' : text);
+            final isBoldLine = lineTotalChars[i] > 0 &&
+                lineBoldChars[i] / lineTotalChars[i] > 0.5;
+
+            var body = text;
+            if (!prefixUsed && autoPrefix.isNotEmpty) {
+              final alreadyLabelled =
+                  RegExp(r'^\s*\(?([A-Za-z]|\d+)[\.\)]').hasMatch(text);
+              if (!alreadyLabelled) body = '$autoPrefix$text';
+              prefixUsed = true;
+            }
+            lines.add(isBoldLine ? '$_kBoldMarker$body' : body);
           }
         }
 
-        // Fallback safety net: some DOCX files still cram multiple options
-        // onto one line with no <w:br/> between them at all, e.g.
-        // "A. Civil Aviation Authority of the Philippines B. Central..."
-        // If that happens, split before each A/B/C/D option letter so the
-        // parser still sees them as separate lines. With the per-line bold
-        // tracking above already correctly assigning the marker, this only
-        // needs to fire in that rarer case.
+        // Fallback safety net: some DOCX files cram multiple options onto one
+        // line with no <w:br/> between them, e.g.
+        // "A. Civil Aviation Authority B. Central ..."
+        // We only split lines that START like an option, so ordinary text
+        // such as "Ph.D. " or "Section B. " in a question is left alone.
         final splitLines = <String>[];
         for (final line in lines) {
           final hasBoldPrefix = line.startsWith(_kBoldMarker);
           final body = hasBoldPrefix ? line.substring(_kBoldMarker.length) : line;
 
-          // Split before A./B./C./D. even with NO space between options
-          // e.g. "...PhilippinesB. Central..." → newline inserted before B.
-          final separated = body.replaceAllMapped(
-            RegExp(r'(?<=[^\s])([A-Da-d]\.\s)'),
-            (m) => '\n${m.group(1)}',
-          );
+          final isOptionLine = RegExp(r'^\(?[A-Da-d][\.\)]').hasMatch(body);
+          final separated = isOptionLine
+              ? body
+                  .replaceAll(RegExp(r'\s+(?=[B-D][\.\)]\s)'), '\n') // "... B. Next"
+                  .replaceAllMapped(RegExp(r'(?<=[a-z0-9])([B-D]\.\s)'), // "...PhilippinesB. Next"
+                      (m) => '\n${m.group(1)}')
+              : body;
+
           final parts = separated
               .split('\n')
               .map((l) => l.trim())
@@ -396,9 +501,7 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
               .toList();
 
           for (int i = 0; i < parts.length; i++) {
-            // Only the first split part carries the paragraph's original
-            // bold marker forward — merged multi-option paragraphs are rare
-            // since each option is normally its own bold/non-bold line now.
+            // Only the first split part carries the original bold marker.
             splitLines.add(i == 0 && hasBoldPrefix ? '$_kBoldMarker${parts[i]}' : parts[i]);
           }
         }
@@ -413,7 +516,7 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
     } catch (e) {
       setState(() => _previewError = 'Could not read DOCX file: $e');
     } finally {
-      setState(() => _loadingFile = false);
+      if (mounted) setState(() => _loadingFile = false);
     }
   }
 
@@ -600,7 +703,7 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
                                               const SizedBox(height: 10),
                                               Text('Tap to upload .docx file', style: TextStyle(color: Colors.grey.shade600, fontSize: 13, fontWeight: FontWeight.w500)),
                                               const SizedBox(height: 4),
-                                              Text('Bold option = correct answer, auto-detected', style: TextStyle(color: Colors.grey.shade400, fontSize: 11)),
+                                              Text('Bold option = correct answer, detected automatically', style: TextStyle(color: Colors.grey.shade400, fontSize: 11)),
                                               const SizedBox(height: 14),
                                               ElevatedButton.icon(
                                                 onPressed: _pickFile,
@@ -712,7 +815,7 @@ class _BulkImportDialogState extends State<_BulkImportDialog>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// How to Upload — always-visible step instructions (per client request)
+// How to Upload — always-visible step instructions
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _HowToUploadCard extends StatelessWidget {
@@ -729,10 +832,10 @@ class _HowToUploadCard extends StatelessWidget {
 
   static const _docxSteps = [
     'In your Word file, type each question followed by its four options: A, B, C, and D.',
-    'Bold the text of the correct option — this marks it as the answer, so you don\'t need to type "Answer:".',
+    'Bold the text of the correct option. When you upload the file, the system automatically detects the bolded option as the correct answer, so you don\'t need to type "Answer:".',
     'Save the file as .docx, then tap the upload area (or "Browse File") to select it.',
     'Tap "Preview" to check the detected questions and answers before importing.',
-    'Tap "Import" to add the questions to the Question Sheet below.',
+    'Tap "Import". All questions and choices from your file will appear in the Question Sheet below, with the correct answer already marked.',
   ];
 
   @override
@@ -851,9 +954,10 @@ class _FormatGuideCardState extends State<_FormatGuideCard> {
                   Text(
                     '• Each question needs A. B. C. D. options\n'
                     '• "Answer: B" or "Answer: 2" sets the correct answer\n'
-                    '• In an uploaded DOCX, bolding an option marks it as correct — no "Answer:" line needed\n'
+                    '• In an uploaded DOCX, bold ONE option per question — the system detects it automatically as the correct answer, no "Answer:" line needed\n'
+                    '• If every option is bold, the answer is unclear and will be left blank\n'
                     '• Missing answers can be tapped directly on the question card\n'
-                    '• Separate questions with a blank line or number\n'
+                    '• Numbering (1. 2. 3.) is optional — questions are grouped by their A–D options\n'
                     '• Also supports: Q1. / Question 1. / Ans: / Key:',
                     style: TextStyle(fontSize: 11, color: Colors.brown.shade600, height: 1.6),
                   ),
@@ -1199,8 +1303,8 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         _timeLimitController.text = _formatTimeLimit(savedMins);
       }
 
-      // Load the saved toggle. Defaults to true so quizzes created
-      // before this feature existed keep showing correct answers as before.
+      // Defaults to true so quizzes created before this feature existed
+      // keep showing correct answers as before.
       _showCorrectAnswers = q['showCorrectAnswer'] as bool? ?? true;
 
       for (final rq in (q['questions'] as List? ?? [])) {
@@ -1212,8 +1316,10 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   }
 
   _QuestionData _questionDataFromMap(Map<String, dynamic> map) {
-    final opts = (map['options'] as List?)?.cast<String>() ?? ['', '', '', ''];
-    while (opts.length < 4) opts.add('');
+    final opts = List<String>.from((map['options'] as List?) ?? ['', '', '', '']);
+    while (opts.length < 4) {
+      opts.add('');
+    }
     return _QuestionData(
       questionText: map['question'] as String? ?? '',
       options: opts,
@@ -1276,6 +1382,8 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   }
 
   // ── Add Questions (paste / DOCX) ────────────────────────────────────────────
+  // Imported questions (text, options A–D, and the auto-detected correct
+  // answer) are appended straight into the Question Sheet.
 
   Future<void> _openBulkImport() async {
     final imported = await showDialog<List<_QuestionData>>(
@@ -1286,7 +1394,10 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
     if (imported == null || imported.isEmpty) return;
 
     setState(() {
-      if (_questions.length == 1 && _questions.first.questionController.text.isEmpty) {
+      // Replace the empty starter question, if that's all there is.
+      if (_questions.length == 1 &&
+          _questions.first.questionController.text.isEmpty &&
+          _questions.first.optionControllers.every((c) => c.text.isEmpty)) {
         _questions.first.dispose();
         _questions.clear();
       }
@@ -1322,11 +1433,6 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   }
 
   // ── Subject picker (live curriculum) ───────────────────────────────────────
-  //
-  // showSubjectPicker (manage_curriculum_screen.dart) streams the live,
-  // non-archived subjects for the chosen year: the official BS Criminology
-  // subjects plus anything the admin added in Manage Subjects. This page can
-  // only PICK a subject — adding/removing happens in Manage Subjects.
 
   Future<void> _openSubjectPicker() async {
     if (_selectedYearLevel.isEmpty) {
