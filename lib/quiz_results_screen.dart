@@ -21,7 +21,7 @@ class QuizResultsScreen extends StatefulWidget {
   final String quizTitle;
 
   /// Admin accounts get a "Review Results" button in the app bar that opens
-  /// the overall examination statistics (ReviewResultsScreen).
+  /// the examination statistics of THIS quiz (ReviewResultsScreen).
   final bool isAdmin;
 
   const QuizResultsScreen({
@@ -146,7 +146,11 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                 onPressed: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                      builder: (_) => const ReviewResultsScreen(isAdmin: true)),
+                      builder: (_) => ReviewResultsScreen(
+                        quizId: widget.quizId,
+                        quizTitle: widget.quizTitle,
+                        isAdmin: true,
+                      )),
                 ),
                 icon: const Icon(Icons.analytics_outlined,
                     size: 18, color: Colors.white),
