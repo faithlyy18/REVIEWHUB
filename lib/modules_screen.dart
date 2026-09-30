@@ -662,7 +662,10 @@ class _ManageModuleSubjectsScreenState
               style: TextStyle(fontWeight: FontWeight.bold)),
           onPressed: () => showAddSubjectSheet(context),
         ),
-        body: TabBarView(
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: TabBarView(
           children: [
             // ── Active ───────────────────────────────────────────────
             StreamBuilder<List<_Cluster>>(
@@ -734,6 +737,8 @@ class _ManageModuleSubjectsScreenState
             // ── Archived ─────────────────────────────────────────────
             ArchivedSubjectsList(canDelete: widget.isAdmin),
           ],
+            ),
+          ),
         ),
       ),
     );
