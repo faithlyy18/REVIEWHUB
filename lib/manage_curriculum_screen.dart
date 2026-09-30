@@ -1252,22 +1252,27 @@ class _ArchivedTile extends StatelessWidget {
               ],
             ),
           ),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _SmallAction(
-                  label: 'Restore',
-                  icon: Icons.restore_rounded,
-                  color: _kIndigo,
-                  onTap: onRestore),
-              const SizedBox(height: 6),
-              _SmallAction(
-                  label: 'Delete',
-                  icon: Icons.delete_forever_rounded,
-                  color: Colors.red.shade600,
-                  onTap: onDelete),
-            ],
+          // IntrinsicWidth gives the Column a finite width so both buttons can
+          // stretch to the same size. Without it, `stretch` inside a Row has
+          // unbounded width and the whole tab fails to render (blank page).
+          IntrinsicWidth(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _SmallAction(
+                    label: 'Restore',
+                    icon: Icons.restore_rounded,
+                    color: _kIndigo,
+                    onTap: onRestore),
+                const SizedBox(height: 6),
+                _SmallAction(
+                    label: 'Delete',
+                    icon: Icons.delete_forever_rounded,
+                    color: Colors.red.shade600,
+                    onTap: onDelete),
+              ],
+            ),
           ),
         ]),
       );
@@ -1295,7 +1300,7 @@ class _SmallAction extends StatelessWidget {
             borderRadius: BorderRadius.circular(7),
             border: Border.all(color: color.withValues(alpha: 0.25)),
           ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
+          child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(icon, size: 13, color: color),
             const SizedBox(width: 4),
             Text(label,
