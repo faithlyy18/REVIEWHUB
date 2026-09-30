@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'review_results_screen.dart';
 
 /// QuizResultsScreen — results for ONE specific quiz.
 ///
@@ -19,8 +20,8 @@ class QuizResultsScreen extends StatefulWidget {
   final String quizId;
   final String quizTitle;
 
-  /// Kept only so existing callers that pass `isAdmin:` still compile.
-  /// This screen no longer shows admin-only statistics.
+  /// Admin accounts get a "Review Results" button in the app bar that opens
+  /// the overall examination statistics (ReviewResultsScreen).
   final bool isAdmin;
 
   const QuizResultsScreen({
@@ -136,6 +137,25 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                 overflow: TextOverflow.ellipsis),
           ],
         ),
+        // Admin only: opens the overall examination statistics report.
+        actions: [
+          if (widget.isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: TextButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const ReviewResultsScreen(isAdmin: true)),
+                ),
+                icon: const Icon(Icons.analytics_outlined,
+                    size: 18, color: Colors.white),
+                label: const Text('Review Results',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w600)),
+              ),
+            ),
+        ],
       ),
       // Outer stream: the quiz doc (subject + required passing %).
       body: StreamBuilder<DocumentSnapshot>(
