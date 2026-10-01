@@ -7,11 +7,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 ///   • quiz_results  → every submission a student completes (written by
 ///                     TakeQuizScreen: studentName, quizId, quizTitle,
 ///                     score, totalQuestions, submittedAt, ...)
-///   • quizzes       → subject + optional `passingPercent` per review
-///   • users         → fallback for a student's full name if a result
-///                     has no studentName saved
+///   • quizzes       → subject + optional `passingPercent` per review.
+///                     A result is ONLY counted if its review still exists,
+///                     so Reports always matches the instructor
+///                     Quiz Results screens (no orphaned/old results).
+///   • users         → fallback for a student's full name and year level
+///                     if a result doesn't have them saved.
 ///
 /// New submissions appear automatically (snapshots), no refresh needed.
+///
+/// Results are sorted from highest score to lowest score.
+/// All statistics (top cards + Board Exam Statistics) are computed from
+/// the actual results — nothing is hardcoded.
 ///
 /// Pass mark: each quiz's `passingPercent` if set, otherwise
 /// [kDefaultPassingPercent] below (75, same as the other result screens).
@@ -77,7 +84,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return '$h12:$mm ${d.hour >= 12 ? 'PM' : 'AM'}';
   }
 
-  String _pct(double v) => v % 1 == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  String _pct(double v) =>
+      v % 1 == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
 
   // ── Build ────────────────────────────────────────────────────────────────
   @override
@@ -113,15 +121,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       child: CircularProgressIndicator(color: _brand));
                 }
 
-                // quizId -> quiz data
+                // quizId -> quiz data (only reviews that currently exist)
                 final quizzes = <String, Map<String, dynamic>>{
                   for (final d in quizSnap.data!.docs)
                     d.id: d.data() as Map<String, dynamic>,
                 };
 
-                // uid -> full name (fallback only; users read may be denied
-                // or still loading, which is fine)
+                // uid -> full name / year level (fallbacks only; the users
+                // read may be denied or still loading, which is fine)
                 final names = <String, String>{};
+                final years = <String, String>{};
                 for (final d in userSnap.data?.docs ?? const []) {
                   final m = d.data() as Map<String, dynamic>;
                   final n = (m['name'] as String?)?.trim() ?? '';
@@ -129,16 +138,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   final l = (m['lastName'] as String?)?.trim() ?? '';
                   final full = n.isNotEmpty ? n : '$f $l'.trim();
                   if (full.isNotEmpty) names[d.id] = full;
+                  final y = (m['yearLevel'] as String?)?.trim() ?? '';
+                  if (y.isNotEmpty) years[d.id] = y;
                 }
 
-                final all = _normalise(resSnap.data!.docs, quizzes, names);
+                final all =
+                    _normalise(resSnap.data!.docs, quizzes, names, years);
                 if (all.isEmpty) return _buildEmpty();
 
                 // Review dropdown options (only reviews that have results).
                 final reviewOptions = <String, String>{};
                 for (final r in all) {
-                  reviewOptions[r.quizId] =
-                      r.subject.isNotEmpty ? '${r.quizTitle} — ${r.subject}' : r.quizTitle;
+                  reviewOptions[r.quizId] = r.subject.isNotEmpty
+                      ? '${r.quizTitle} — ${r.subject}'
+                      : r.quizTitle;
                 }
                 // If the selected review vanished, fall back to all.
                 final activeQuiz =
@@ -148,7 +161,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 // Scope = review filter + search. Stats use this scope so the
                 // passed/failed counts always add up to the total.
                 final scoped = all.where((r) {
-                  if (activeQuiz != null && r.quizId != activeQuiz) return false;
+                  if (activeQuiz != null && r.quizId != activeQuiz) {
+                    return false;
+                  }
                   if (q.isNotEmpty &&
                       !r.name.toLowerCase().contains(q) &&
                       !r.quizTitle.toLowerCase().contains(q) &&
@@ -182,6 +197,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                             children: [
                               _buildStats(scoped, narrow: w < 560),
                               const SizedBox(height: 12),
+                              _buildBoardExamStats(scoped),
+                              const SizedBox(height: 12),
                               _buildFilters(reviewOptions, activeQuiz),
                               const SizedBox(height: 12),
                               _buildResultsCard(
@@ -209,12 +226,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
     List<QueryDocumentSnapshot> docs,
     Map<String, Map<String, dynamic>> quizzes,
     Map<String, String> names,
+    Map<String, String> years,
   ) {
     final rows = <_Rep>[];
     for (final d in docs) {
       final m = d.data() as Map<String, dynamic>;
       final quizId = (m['quizId'] as String?) ?? '';
-      final quiz = quizzes[quizId] ?? const <String, dynamic>{};
+
+      // Only count results whose review still exists. This is what makes
+      // Reports match the instructor Quiz Results screens and removes old /
+      // orphaned results from deleted reviews.
+      final quiz = quizzes[quizId];
+      if (quizId.isEmpty || quiz == null) continue;
 
       final uid = ((m['studentUid'] ?? m['studentId']) as String?) ?? '';
       var name = ((m['studentName'] as String?) ?? '').trim();
@@ -222,11 +245,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
         name = names[uid] ?? 'Unknown Student';
       }
 
+      var year = ((m['yearLevel'] as String?) ?? '').trim();
+      if (year.isEmpty) year = years[uid] ?? '';
+
       final score = (m['score'] as num?)?.toInt() ?? 0;
       final total = (m['totalQuestions'] as num?)?.toInt() ?? 0;
       final percent = total == 0 ? 0.0 : score / total * 100;
-      final passMark =
-          (quiz['passingPercent'] as num?)?.toDouble() ?? kDefaultPassingPercent;
+      final passMark = (quiz['passingPercent'] as num?)?.toDouble() ??
+          kDefaultPassingPercent;
 
       final subjectFromResult = ((m['subject'] as String?) ?? '').trim();
       final subject = subjectFromResult.isNotEmpty
@@ -234,16 +260,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
           : ((quiz['subject'] as String?) ?? '').trim();
 
       final titleFromResult = ((m['quizTitle'] as String?) ?? '').trim();
+      final quizTitle = ((quiz['title'] as String?) ?? '').trim();
       final title = titleFromResult.isNotEmpty
           ? titleFromResult
-          : (((quiz['title'] as String?) ?? '').trim().isNotEmpty
-              ? (quiz['title'] as String).trim()
-              : 'Untitled Review');
+          : (quizTitle.isNotEmpty ? quizTitle : 'Untitled Review');
 
       rows.add(_Rep(
         studentKey: uid.isNotEmpty ? uid : name.toLowerCase(),
         name: name,
-        year: (m['yearLevel'] as String?) ?? '',
+        year: year,
         quizId: quizId,
         quizTitle: title,
         subject: subject,
@@ -255,8 +280,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ));
     }
 
-    // Newest first.
+    // Highest score -> lowest. Percentage first (reviews have different
+    // totals), then raw score, then newest submission as the tie-breaker.
     rows.sort((a, b) {
+      final byPct = b.percent.compareTo(a.percent);
+      if (byPct != 0) return byPct;
+      final byScore = b.score.compareTo(a.score);
+      if (byScore != 0) return byScore;
       final aT = a.submittedAt, bT = b.submittedAt;
       if (aT == null && bT == null) return 0;
       if (aT == null) return 1;
@@ -305,7 +335,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
         icon: Icons.emoji_events_outlined,
         label: 'Highest Score',
         value: best == null ? '—' : '${best.score}/${best.total}',
-        sub: best == null ? 'No data' : '${_pct(best.percent)}% · ${best.name}',
+        sub: best == null
+            ? 'No data'
+            : '${_pct(best.percent)}% · ${best.name}',
         color: const Color(0xFFF9A825),
       ),
     ];
@@ -331,6 +363,96 @@ class _ReportsScreenState extends State<ReportsScreen> {
         Expanded(child: tiles[3]),
       ]),
     ]);
+  }
+
+  // ── Board Exam Statistics ────────────────────────────────────────────────
+  // Overall passing / failing percentage, calculated from the actual
+  // results currently in scope (e.g. 3 passed + 1 failed = 75% / 25%).
+  Widget _buildBoardExamStats(List<_Rep> rows) {
+    final total = rows.length;
+    final passed = rows.where((r) => r.passed).length;
+    final failed = total - passed;
+    final passPct = total == 0 ? 0.0 : passed / total * 100;
+    final failPct = total == 0 ? 0.0 : failed / total * 100;
+
+    Widget legend(String label, String value, int count, Color c) => Expanded(
+          child: Row(children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text.rich(
+                    TextSpan(children: [
+                      TextSpan(
+                          text: '$value% ',
+                          style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: c)),
+                      TextSpan(
+                          text: label,
+                          style: TextStyle(
+                              fontSize: 13, color: Colors.grey[700])),
+                    ]),
+                  ),
+                  Text('$count of $total',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+                ],
+              ),
+            ),
+          ]),
+        );
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.bar_chart_rounded, size: 16, color: _brand),
+            const SizedBox(width: 6),
+            const Text('Board Exam Statistics',
+                style: TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 14, color: _brand)),
+            const Spacer(),
+            Text('$total submission${total == 1 ? '' : 's'}',
+                style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            legend('Passed', _pct(passPct), passed, _green),
+            legend('Failed', _pct(failPct), failed, _red),
+          ]),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              height: 10,
+              child: total == 0
+                  ? Container(color: const Color(0xFFE8EAF6))
+                  : Row(children: [
+                      if (passed > 0)
+                        Expanded(flex: passed, child: Container(color: _green)),
+                      if (failed > 0)
+                        Expanded(flex: failed, child: Container(color: _red)),
+                    ]),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Filters ──────────────────────────────────────────────────────────────
@@ -451,10 +573,17 @@ class _ReportsScreenState extends State<ReportsScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-            child: Wrap(spacing: 6, runSpacing: 6, children: [
-              chip('All (${scoped.length})', _StatusFilter.all),
-              chip('Passed ($passedCount)', _StatusFilter.passed),
-              chip('Failed ($failedCount)', _StatusFilter.failed),
+            child: Row(children: [
+              Expanded(
+                child: Wrap(spacing: 6, runSpacing: 6, children: [
+                  chip('All (${scoped.length})', _StatusFilter.all),
+                  chip('Passed ($passedCount)', _StatusFilter.passed),
+                  chip('Failed ($failedCount)', _StatusFilter.failed),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              Text('Sorted by score, highest first',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
             ]),
           ),
           const Divider(height: 1, color: _border),
@@ -491,8 +620,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ),
       children: [
         for (final h in const [
-          'Student', 'Review / Subject', 'Score', 'Percentage',
-          'Date taken', 'Status'
+          'Student',
+          'Review / Subject',
+          'Score',
+          'Percentage',
+          'Date taken',
+          'Status'
         ])
           cell(Text(h, style: headStyle), v: 9),
       ],
@@ -586,7 +719,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(rows[i].name,
+                  Text(
+                      rows[i].year.isNotEmpty
+                          ? '${rows[i].name} · ${rows[i].year}'
+                          : rows[i].name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
