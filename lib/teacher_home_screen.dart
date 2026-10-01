@@ -9,7 +9,7 @@ import 'modules_screen.dart';
 import 'retake_requests_tab.dart';
 import 'curriculum_repo.dart';
 import 'manage_curriculum_screen.dart';
-import 'reports_screen.dart'; // NEW: admin-only Reports
+import 'reports_screen.dart'; // Admin-only Reports (opened as its own page)
 
 // NOTE: the curriculum (year levels → semesters → subjects) is no longer
 // hardcoded here. Subjects come live from Firestore through CurriculumRepo,
@@ -105,14 +105,17 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
   late final Future<String> _teacherNameFuture;
 
   // Set to true when this account's Firestore doc has accountType == 'admin'.
-  // Drives the extra "Overview" / "Reports" nav items and IndexedStack pages —
-  // everyone else keeps the exact same Reviews/Modules/Archive/Requests
-  // dashboard. It is also passed to QuizResultsScreen so the Admin-only
-  // examination statistics card is shown for admins only.
+  // Drives the extra "Overview" / "Reports" drawer items — everyone else
+  // keeps the exact same Reviews/Modules/Archive/Requests dashboard. It is
+  // also passed to QuizResultsScreen so the Admin-only examination
+  // statistics card is shown for admins only.
   bool _isAdmin = false;
 
   // 0 = Reviews, 1 = Modules, 2 = Archive, 3 = Requests,
-  // 4 = Overview (admin only), 5 = Reports (admin only)
+  // 4 = Overview (admin only).
+  // NOTE: Reports (admin only) is NOT a tab anymore. It opens as its own
+  // page from the drawer (ReportsScreen(standalone: true)), exactly like
+  // Manage Curriculum, so it gets a clean, bounded layout.
   int _activeTab = 0;
   String _filterYear = 'All Years';
   late final Stream<QuerySnapshot> _quizStream;
@@ -137,8 +140,6 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
         return 'Requests';
       case 4:
         return 'Overview';
-      case 5:
-        return 'Reports';
       default:
         return 'ReviewHub';
     }
@@ -485,12 +486,11 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                   // Instructor-facing retake-request inbox.
                                   // Always index 3, right after Archive.
                                   const RetakeRequestsTab(),
-                                  // Only reachable when _isAdmin is true,
-                                  // since the drawer items that set
-                                  // _activeTab = 4 / 5 only render for admins.
+                                  // Index 4 — only reachable when _isAdmin
+                                  // is true, since the drawer item that
+                                  // sets _activeTab = 4 only renders for
+                                  // admins.
                                   if (_isAdmin) const _AdminOverviewTabBody(),
-                                  // NEW: index 5 — admin-only Reports.
-                                  if (_isAdmin) const ReportsScreen(),
                                 ],
                               ),
                             ),
@@ -608,12 +608,35 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                 index: 3),
             // Admin-only items. Nothing changes for instructor accounts —
             // these simply don't render for them.
-            // NEW: Reports sits between Requests and Overview.
+            //
+            // Reports opens as its OWN page (standalone: true) instead of
+            // an IndexedStack tab, so it gets a clean bounded layout and
+            // its own app bar — same approach as Manage Curriculum.
             if (_isAdmin)
-              navItem(
-                  icon: Icons.assessment_rounded,
-                  label: 'Reports',
-                  index: 5),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                child: ListTile(
+                  leading: Icon(Icons.assessment_rounded,
+                      color: Colors.grey[600]),
+                  title: const Text(
+                    'Reports',
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                  ),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  onTap: () {
+                    Navigator.pop(context); // close the drawer first
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            const ReportsScreen(standalone: true),
+                      ),
+                    );
+                  },
+                ),
+              ),
             if (_isAdmin)
               navItem(
                   icon: Icons.dashboard_rounded,
