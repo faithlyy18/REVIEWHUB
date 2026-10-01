@@ -9,6 +9,7 @@ import 'modules_screen.dart';
 import 'retake_requests_tab.dart';
 import 'curriculum_repo.dart';
 import 'manage_curriculum_screen.dart';
+import 'reports_screen.dart'; // NEW: admin-only Reports
 
 // NOTE: the curriculum (year levels → semesters → subjects) is no longer
 // hardcoded here. Subjects come live from Firestore through CurriculumRepo,
@@ -104,13 +105,14 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
   late final Future<String> _teacherNameFuture;
 
   // Set to true when this account's Firestore doc has accountType == 'admin'.
-  // Drives the extra "Overview" nav item and IndexedStack page — everyone
-  // else keeps the exact same Reviews/Modules/Archive/Requests dashboard.
-  // It is also passed to QuizResultsScreen so the Admin-only examination
-  // statistics card is shown for admins only.
+  // Drives the extra "Overview" / "Reports" nav items and IndexedStack pages —
+  // everyone else keeps the exact same Reviews/Modules/Archive/Requests
+  // dashboard. It is also passed to QuizResultsScreen so the Admin-only
+  // examination statistics card is shown for admins only.
   bool _isAdmin = false;
 
-  // 0 = Reviews, 1 = Modules, 2 = Archive, 3 = Requests, 4 = Overview (admin only)
+  // 0 = Reviews, 1 = Modules, 2 = Archive, 3 = Requests,
+  // 4 = Overview (admin only), 5 = Reports (admin only)
   int _activeTab = 0;
   String _filterYear = 'All Years';
   late final Stream<QuerySnapshot> _quizStream;
@@ -135,6 +137,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
         return 'Requests';
       case 4:
         return 'Overview';
+      case 5:
+        return 'Reports';
       default:
         return 'ReviewHub';
     }
@@ -482,9 +486,11 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                                   // Always index 3, right after Archive.
                                   const RetakeRequestsTab(),
                                   // Only reachable when _isAdmin is true,
-                                  // since the drawer item that sets
-                                  // _activeTab = 4 only renders for admins.
+                                  // since the drawer items that set
+                                  // _activeTab = 4 / 5 only render for admins.
                                   if (_isAdmin) const _AdminOverviewTabBody(),
+                                  // NEW: index 5 — admin-only Reports.
+                                  if (_isAdmin) const ReportsScreen(),
                                 ],
                               ),
                             ),
@@ -523,8 +529,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
     );
   }
 
-  // ── Hamburger menu drawer: Reviews, Modules, Archive, Requests, (Overview,
-  // Manage Curriculum for admins) ──
+  // ── Hamburger menu drawer: Reviews, Modules, Archive, Requests, (Reports,
+  // Overview, Manage Curriculum for admins) ──
   Widget _buildDrawer() {
     Widget navItem({
       required IconData icon,
@@ -602,6 +608,12 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                 index: 3),
             // Admin-only items. Nothing changes for instructor accounts —
             // these simply don't render for them.
+            // NEW: Reports sits between Requests and Overview.
+            if (_isAdmin)
+              navItem(
+                  icon: Icons.assessment_rounded,
+                  label: 'Reports',
+                  index: 5),
             if (_isAdmin)
               navItem(
                   icon: Icons.dashboard_rounded,

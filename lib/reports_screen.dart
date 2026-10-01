@@ -30,6 +30,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const double _maxWidth = 1100;
 
   late final Future<bool> _isAdminFuture;
+  Map<String, String> _names = {}; // uid -> display name (instructors/admins)
   late final Stream<QuerySnapshot> _quizStream;
   late final Stream<QuerySnapshot> _resultStream;
 
@@ -52,7 +53,24 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (u == null) return false;
     final d =
         await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
-    return d.data()?['accountType'] == 'admin';
+    final isAdmin = d.data()?['accountType'] == 'admin';
+    if (isAdmin) {
+      try {
+        final users =
+            await FirebaseFirestore.instance.collection('users').get();
+        _names = {for (final x in users.docs) x.id: _nameOf(x.data())};
+      } catch (_) {}
+    }
+    return isAdmin;
+  }
+
+  static String _nameOf(Map<String, dynamic> d) {
+    final name = _s(d['name']);
+    if (name.isNotEmpty) return name;
+    final full = '${_s(d['firstName'])} ${_s(d['lastName'])}'.trim();
+    if (full.isNotEmpty) return full;
+    final email = _s(d['email']);
+    return email.isEmpty ? '' : email.split('@').first;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -107,9 +125,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       instructor: _first([
         m['instructorName'],
         q['instructorName'],
-        q['teacherName'],
-        q['createdByName'],
-        q['authorName'],
+        _names[_s(q['createdBy'])],
       ]),
       score: score,
       total: total,
