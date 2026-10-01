@@ -280,8 +280,29 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ));
     }
 
-    // Highest score -> lowest. Percentage first (reviews have different
-    // totals), then raw score, then newest submission as the tie-breaker.
+    // Retakes: keep ONLY each student's latest attempt per review. Earlier
+    // attempts are dropped here, so they are not displayed and are not
+    // counted in any statistic (totals, passed/failed, Board Exam
+    // Statistics, highest score).
+    final latest = <String, _Rep>{};
+    for (final r in rows) {
+      final key = '${r.studentKey}|${r.quizId}';
+      final existing = latest[key];
+      if (existing == null) {
+        latest[key] = r;
+        continue;
+      }
+      final a = r.submittedAt, b = existing.submittedAt;
+      final isNewer = a != null && (b == null || a.compareTo(b) > 0);
+      if (isNewer) latest[key] = r;
+    }
+    rows
+      ..clear()
+      ..addAll(latest.values);
+
+    // Highest score -> lowest, based on each student's latest attempt.
+    // Percentage first (reviews have different totals), then raw score,
+    // then newest submission as the tie-breaker.
     rows.sort((a, b) {
       final byPct = b.percent.compareTo(a.percent);
       if (byPct != 0) return byPct;
