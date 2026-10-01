@@ -17,6 +17,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 /// Pass/fail uses the passing % saved on the result (if present), else the
 /// quiz's `passingPercent`, else 75.
 ///
+/// FIXES in this version:
+///  - All Firestore fields are parsed defensively (no more `as Timestamp?`
+///    / `as num?` casts that throw and turn the screen into a blank gray box).
+///  - A single malformed document is skipped instead of crashing the screen.
+///  - Reviews with no takers always appear in "Reviews uploaded by instructors".
+///  - Extra fallback field names (subjectName, reviewId, instructorId, etc.).
+///  - Change [_quizCollection] if your instructor upload writes elsewhere.
+///
 /// Use as a tab body:   const ReportsScreen()
 /// Or as its own page:  const ReportsScreen(standalone: true)
 class ReportsScreen extends StatefulWidget {
@@ -36,6 +44,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const double _defaultPassing = 75;
   static const double _maxWidth = 1100;
 
+  /// Collection where instructors' uploaded reviews are stored.
+  /// Change this if your upload screen saves to a different collection.
+  static const String _quizCollection = 'quizzes';
+  static const String _resultCollection = 'quiz_results';
+
   late final Future<bool> _isAdminFuture;
   Map<String, String> _names = {}; // uid -> display name
   late final Stream<QuerySnapshot> _quizStream;
@@ -51,25 +64,29 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void initState() {
     super.initState();
     final db = FirebaseFirestore.instance;
-    _quizStream = db.collection('quizzes').snapshots();
-    _resultStream = db.collection('quiz_results').snapshots();
+    _quizStream = db.collection(_quizCollection).snapshots();
+    _resultStream = db.collection(_resultCollection).snapshots();
     _isAdminFuture = _checkAdmin();
   }
 
   Future<bool> _checkAdmin() async {
-    final u = FirebaseAuth.instance.currentUser;
-    if (u == null) return false;
-    final d =
-        await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
-    final isAdmin = d.data()?['accountType'] == 'admin';
-    if (isAdmin) {
-      try {
-        final users =
-            await FirebaseFirestore.instance.collection('users').get();
-        _names = {for (final x in users.docs) x.id: _nameOf(x.data())};
-      } catch (_) {}
+    try {
+      final u = FirebaseAuth.instance.currentUser;
+      if (u == null) return false;
+      final d =
+          await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
+      final isAdmin = d.data()?['accountType'] == 'admin';
+      if (isAdmin) {
+        try {
+          final users =
+              await FirebaseFirestore.instance.collection('users').get();
+          _names = {for (final x in users.docs) x.id: _nameOf(x.data())};
+        } catch (_) {}
+      }
+      return isAdmin;
+    } catch (_) {
+      return false;
     }
-    return isAdmin;
   }
 
   static String _nameOf(Map<String, dynamic> d) {
@@ -81,7 +98,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return email.isEmpty ? '' : email.split('@').first;
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ── Safe helpers ─────────────────────────────────────────────────────────
   static String _s(dynamic v) => v is String ? v.trim() : '';
 
   static String _first(List<dynamic> vs) {
@@ -90,6 +107,29 @@ class _ReportsScreenState extends State<ReportsScreen> {
       if (s.isNotEmpty) return s;
     }
     return '';
+  }
+
+  static double? _num(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v.trim());
+    return null;
+  }
+
+  static Timestamp? _ts(dynamic v) {
+    if (v is Timestamp) return v;
+    if (v is DateTime) return Timestamp.fromDate(v);
+    if (v is int) return Timestamp.fromMillisecondsSinceEpoch(v);
+    if (v is String) {
+      final d = DateTime.tryParse(v);
+      if (d != null) return Timestamp.fromDate(d);
+    }
+    return null;
+  }
+
+  static Map<String, dynamic> _map(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
   }
 
   static String _date(Timestamp? ts) {
@@ -112,34 +152,39 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   static String _pct(double v) => '${v.toStringAsFixed(1)}%';
 
+  // ── Mapping (never throws) ───────────────────────────────────────────────
   _Rev _toRev(String id, Map<String, dynamic> q) {
-    final subject = _first([q['subject']]);
-    final title = _first([q['title']]);
+    final subject = _first([q['subject'], q['subjectName']]);
+    final title = _first([q['title'], q['name']]);
     final qs = q['questions'];
+    final createdBy = _first([q['createdBy'], q['instructorId'], q['uid']]);
     return _Rev(
       id: id,
       title: title.isEmpty ? '(untitled)' : title,
       subject: subject.isEmpty ? 'Unassigned' : subject,
-      year: _s(q['yearLevel']),
-      instructor: _first([q['instructorName'], _names[_s(q['createdBy'])]]),
-      questions: qs is List ? qs.length : 0,
-      passing: (q['passingPercent'] as num?)?.toDouble() ?? _defaultPassing,
-      archived: q['archived'] as bool? ?? false,
-      createdAt: q['createdAt'] as Timestamp?,
+      year: _first([q['yearLevel'], q['year']]),
+      instructor: _first([q['instructorName'], _names[createdBy]]),
+      questions: qs is List
+          ? qs.length
+          : (_num(q['totalQuestions'])?.toInt() ?? _num(qs)?.toInt() ?? 0),
+      passing: _num(q['passingPercent']) ?? _defaultPassing,
+      archived: q['archived'] == true,
+      createdAt: _ts(q['createdAt']),
     );
   }
 
   _R _toRow(Map<String, dynamic> m, Map<String, Map<String, dynamic>> quizzes) {
-    final quizId = _s(m['quizId']);
+    final quizId = _first([m['quizId'], m['reviewId']]);
     final Map<String, dynamic> q = quizzes[quizId] ?? const {};
-    final score = (m['score'] as num?)?.toInt() ?? 0;
-    final total = (m['totalQuestions'] as num?)?.toInt() ?? 0;
+    final score = _num(m['score'])?.toInt() ?? 0;
+    final total = _num(m['totalQuestions'])?.toInt() ?? 0;
     final percent = total == 0 ? 0.0 : score / total * 100;
-    final passing = ((m['passingPercent'] ?? q['passingPercent']) as num?)
-            ?.toDouble() ??
+    final passing = _num(m['passingPercent']) ??
+        _num(q['passingPercent']) ??
         _defaultPassing;
-    final subject = _first([m['subject'], q['subject']]);
-    final name = _s(m['studentName']);
+    final subject = _first([m['subject'], q['subject'], q['subjectName']]);
+    final name = _first([m['studentName'], m['name']]);
+    final createdBy = _first([q['createdBy'], q['instructorId'], q['uid']]);
     return _R(
       quizId: quizId,
       quizTitle: _first([m['quizTitle'], q['title']]),
@@ -149,14 +194,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
       instructor: _first([
         m['instructorName'],
         q['instructorName'],
-        _names[_s(q['createdBy'])],
+        _names[createdBy],
       ]),
       score: score,
       total: total,
       percent: percent,
       passing: passing,
       passed: percent >= passing,
-      submittedAt: m['submittedAt'] as Timestamp?,
+      submittedAt: _ts(m['submittedAt']),
     );
   }
 
@@ -225,15 +270,31 @@ class _ReportsScreenState extends State<ReportsScreen> {
               return const Center(
                   child: CircularProgressIndicator(color: _brand));
             }
+
             final quizzes = <String, Map<String, dynamic>>{
-              for (final d in quizSnap.data!.docs)
-                d.id: d.data() as Map<String, dynamic>,
+              for (final d in quizSnap.data!.docs) d.id: _map(d.data()),
             };
-            final revs =
-                quizzes.entries.map((e) => _toRev(e.key, e.value)).toList();
-            final rows = resSnap.data!.docs
-                .map((d) => _toRow(d.data() as Map<String, dynamic>, quizzes))
-                .toList();
+
+            // Parse each document separately so one bad doc can't blank
+            // the whole screen.
+            final revs = <_Rev>[];
+            for (final e in quizzes.entries) {
+              try {
+                revs.add(_toRev(e.key, e.value));
+              } catch (err) {
+                debugPrint('Reports: skipped review ${e.key}: $err');
+              }
+            }
+            final rows = <_R>[];
+            for (final d in resSnap.data!.docs) {
+              try {
+                rows.add(_toRow(_map(d.data()), quizzes));
+              } catch (err) {
+                debugPrint('Reports: skipped result ${d.id}: $err');
+              }
+            }
+
+            debugPrint('REPORTS → reviews: ${revs.length}, results: ${rows.length}');
             return _buildBody(revs, rows);
           },
         );
@@ -366,7 +427,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       ? Padding(
                           padding: const EdgeInsets.all(20),
                           child: Center(
-                            child: Text('No reviews match these filters.',
+                            child: Text(
+                                allRevs.isEmpty
+                                    ? 'No reviews have been uploaded yet.'
+                                    : 'No reviews match these filters.',
                                 style: TextStyle(color: Colors.grey[500])),
                           ),
                         )
@@ -544,6 +608,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return SizedBox(
       width: 210,
       child: DropdownButtonFormField<String?>(
+        key: ValueKey('$label-$v-${options.length}'),
         value: v,
         isExpanded: true,
         decoration: InputDecoration(
@@ -733,9 +798,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final n = list.length;
     final p = list.where((r) => r.passed).length;
     final f = n - p;
-    final avg = n == 0
-        ? 0.0
-        : list.fold<double>(0, (a, r) => a + r.percent) / n;
+    final avg =
+        n == 0 ? 0.0 : list.fold<double>(0, (a, r) => a + r.percent) / n;
 
     return InkWell(
       onTap: () => setState(() => _quizId = v.id),
@@ -755,7 +819,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
               if (v.year.isNotEmpty) _chip(Icons.school_rounded, v.year),
               _chip(Icons.help_outline_rounded,
                   '${v.questions} question${v.questions == 1 ? '' : 's'}'),
-              _chip(Icons.flag_rounded, 'Passing ${v.passing.toStringAsFixed(0)}%'),
+              _chip(Icons.flag_rounded,
+                  'Passing ${v.passing.toStringAsFixed(0)}%'),
               _chip(Icons.event_rounded, 'Posted ${_date(v.createdAt)}'),
               if (v.archived)
                 _chip(Icons.inventory_2_rounded, 'Archived',
@@ -795,8 +860,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         fontWeight: FontWeight.w600)),
                 Text('Average ${_pct(avg)}',
                     style: const TextStyle(fontSize: 12.5)),
-                Text(
-                    'Top: ${list.first.name} (${_pct(list.first.percent)})',
+                Text('Top: ${list.first.name} (${_pct(list.first.percent)})',
                     style: const TextStyle(fontSize: 12.5)),
               ]),
             ],
