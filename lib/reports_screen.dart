@@ -3,12 +3,19 @@ import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-/// ReportsScreen — admin-only report of every exam attempt across all reviews.
+/// ReportsScreen — admin-only report of every review and every exam attempt.
 ///
-/// Reads `quiz_results` (one doc per attempt) and joins each one to its
-/// `quizzes` doc for subject / passing % / instructor when the result doc
-/// doesn't carry them yet. Pass/fail uses the passing % saved on the result
-/// (if present), else the quiz's `passingPercent`, else 75.
+/// Sections:
+///  1. Summary cards (examinees, pass %, fail %, average, highest, lowest)
+///  2. Top performer
+///  3. Reviews uploaded by instructors (ALL reviews, even with no takers),
+///     each with its taker count, pass/fail %, average and top scorer
+///  4. Board-exam statistics by subject
+///  5. Examinee results table (rank, name, subject, score, remarks, date...)
+///
+/// Reads `quizzes` + `quiz_results` (+ `users` once, for instructor names).
+/// Pass/fail uses the passing % saved on the result (if present), else the
+/// quiz's `passingPercent`, else 75.
 ///
 /// Use as a tab body:   const ReportsScreen()
 /// Or as its own page:  const ReportsScreen(standalone: true)
@@ -30,13 +37,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const double _maxWidth = 1100;
 
   late final Future<bool> _isAdminFuture;
-  Map<String, String> _names = {}; // uid -> display name (instructors/admins)
+  Map<String, String> _names = {}; // uid -> display name
   late final Stream<QuerySnapshot> _quizStream;
   late final Stream<QuerySnapshot> _resultStream;
 
   String? _subject;
   String? _quizId;
   String? _year;
+  String? _instructor;
   DateTimeRange? _range;
 
   @override
@@ -104,6 +112,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   static String _pct(double v) => '${v.toStringAsFixed(1)}%';
 
+  _Rev _toRev(String id, Map<String, dynamic> q) {
+    final subject = _first([q['subject']]);
+    final title = _first([q['title']]);
+    final qs = q['questions'];
+    return _Rev(
+      id: id,
+      title: title.isEmpty ? '(untitled)' : title,
+      subject: subject.isEmpty ? 'Unassigned' : subject,
+      year: _s(q['yearLevel']),
+      instructor: _first([q['instructorName'], _names[_s(q['createdBy'])]]),
+      questions: qs is List ? qs.length : 0,
+      passing: (q['passingPercent'] as num?)?.toDouble() ?? _defaultPassing,
+      archived: q['archived'] as bool? ?? false,
+      createdAt: q['createdAt'] as Timestamp?,
+    );
+  }
+
   _R _toRow(Map<String, dynamic> m, Map<String, Map<String, dynamic>> quizzes) {
     final quizId = _s(m['quizId']);
     final Map<String, dynamic> q = quizzes[quizId] ?? const {};
@@ -114,13 +139,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ?.toDouble() ??
         _defaultPassing;
     final subject = _first([m['subject'], q['subject']]);
+    final name = _s(m['studentName']);
     return _R(
       quizId: quizId,
       quizTitle: _first([m['quizTitle'], q['title']]),
       subject: subject.isEmpty ? 'Unassigned' : subject,
-      name: _first([m['studentName']]).isEmpty
-          ? 'Unknown Student'
-          : _s(m['studentName']),
+      name: name.isEmpty ? 'Unknown Student' : name,
       year: _s(m['yearLevel']),
       instructor: _first([
         m['instructorName'],
@@ -189,49 +213,85 @@ class _ReportsScreenState extends State<ReportsScreen> {
         return StreamBuilder<QuerySnapshot>(
           stream: _resultStream,
           builder: (context, resSnap) {
+            if (quizSnap.hasError) {
+              return _msg(Icons.error_outline_rounded,
+                  'Could not load reviews.\n${quizSnap.error}');
+            }
             if (resSnap.hasError) {
               return _msg(Icons.error_outline_rounded,
-                  'Could not load reports.\n${resSnap.error}');
+                  'Could not load results.\n${resSnap.error}');
             }
-            if (!resSnap.hasData) {
+            if (!quizSnap.hasData || !resSnap.hasData) {
               return const Center(
                   child: CircularProgressIndicator(color: _brand));
             }
             final quizzes = <String, Map<String, dynamic>>{
-              for (final d in (quizSnap.data?.docs ?? []))
+              for (final d in quizSnap.data!.docs)
                 d.id: d.data() as Map<String, dynamic>,
             };
-            final all = resSnap.data!.docs
+            final revs =
+                quizzes.entries.map((e) => _toRev(e.key, e.value)).toList();
+            final rows = resSnap.data!.docs
                 .map((d) => _toRow(d.data() as Map<String, dynamic>, quizzes))
                 .toList();
-            return _buildBody(all);
+            return _buildBody(revs, rows);
           },
         );
       },
     );
   }
 
-  Widget _buildBody(List<_R> all) {
-    // Filter option lists
-    final subjects = all.map((r) => r.subject).toSet().toList()..sort();
-    final years = all.map((r) => r.year).where((y) => y.isNotEmpty).toSet().toList()
+  Widget _buildBody(List<_Rev> allRevs, List<_R> allRows) {
+    // ── Filter option lists ────────────────────────────────────────────────
+    final subjects = {
+      ...allRevs.map((v) => v.subject),
+      ...allRows.map((r) => r.subject),
+    }.toList()
       ..sort();
+    final years = allRows
+        .map((r) => r.year)
+        .where((y) => y.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    final instructors = {
+      ...allRevs.map((v) => v.instructor),
+      ...allRows.map((r) => r.instructor),
+    }.where((i) => i.isNotEmpty).toList()
+      ..sort();
+
     final quizOptions = <String, String>{};
-    for (final r in all) {
-      if (_subject == null || r.subject == _subject) {
-        quizOptions[r.quizId] = r.quizTitle.isEmpty ? '(untitled)' : r.quizTitle;
-      }
+    for (final v in allRevs) {
+      if (_subject != null && v.subject != _subject) continue;
+      if (_instructor != null && v.instructor != _instructor) continue;
+      quizOptions[v.id] = v.title;
     }
 
-    // Apply filters
-    final rows = all.where((r) {
+    // ── Apply filters ──────────────────────────────────────────────────────
+    final revs = allRevs.where((v) {
+      if (_subject != null && v.subject != _subject) return false;
+      if (_quizId != null && v.id != _quizId) return false;
+      if (_instructor != null && v.instructor != _instructor) return false;
+      return true;
+    }).toList()
+      ..sort((a, b) {
+        final aT = a.createdAt, bT = b.createdAt;
+        if (aT == null && bT == null) return 0;
+        if (aT == null) return 1;
+        if (bT == null) return -1;
+        return bT.compareTo(aT); // newest first
+      });
+
+    final rows = allRows.where((r) {
       if (_subject != null && r.subject != _subject) return false;
       if (_quizId != null && r.quizId != _quizId) return false;
       if (_year != null && r.year != _year) return false;
+      if (_instructor != null && r.instructor != _instructor) return false;
       if (_range != null) {
         final t = r.submittedAt?.toDate();
         if (t == null) return false;
-        final s = DateTime(_range!.start.year, _range!.start.month, _range!.start.day);
+        final s = DateTime(
+            _range!.start.year, _range!.start.month, _range!.start.day);
         final e = DateTime(_range!.end.year, _range!.end.month, _range!.end.day)
             .add(const Duration(days: 1));
         if (t.isBefore(s) || !t.isBefore(e)) return false;
@@ -255,19 +315,27 @@ class _ReportsScreenState extends State<ReportsScreen> {
           : i + 1;
     }
 
-    // Overall stats
+    // ── Groupings (rows are sorted, so first = top scorer) ────────────────
+    final byQuiz = <String, List<_R>>{};
+    final bySubject = <String, List<_R>>{};
+    for (final r in rows) {
+      byQuiz.putIfAbsent(r.quizId, () => []).add(r);
+      bySubject.putIfAbsent(r.subject, () => []).add(r);
+    }
+    final reviewCountBySubject = <String, int>{};
+    for (final v in revs) {
+      reviewCountBySubject[v.subject] =
+          (reviewCountBySubject[v.subject] ?? 0) + 1;
+    }
+    final subjectKeys = {...bySubject.keys, ...reviewCountBySubject.keys}
+        .toList()
+      ..sort();
+
     final passedN = rows.where((r) => r.passed).length;
     final failedN = rows.length - passedN;
     final avg = rows.isEmpty
         ? 0.0
         : rows.fold<double>(0, (a, r) => a + r.percent) / rows.length;
-
-    // Per-subject groups (rows are already sorted, so first = top scorer)
-    final bySubject = <String, List<_R>>{};
-    for (final r in rows) {
-      bySubject.putIfAbsent(r.subject, () => []).add(r);
-    }
-    final subjectKeys = bySubject.keys.toList()..sort();
 
     return SingleChildScrollView(
       child: Center(
@@ -280,39 +348,71 @@ class _ReportsScreenState extends State<ReportsScreen> {
               children: [
                 _header(rows),
                 const SizedBox(height: 12),
-                _filters(subjects, years, quizOptions),
+                _filters(subjects, years, instructors, quizOptions),
                 const SizedBox(height: 12),
-                if (rows.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 40),
-                    child: _msg(Icons.assignment_outlined,
-                        'No exam results match these filters.'),
-                  )
-                else ...[
+                if (rows.isNotEmpty) ...[
                   _summary(rows, passedN, failedN, avg),
                   const SizedBox(height: 12),
                   _topPerformer(rows.first),
                   const SizedBox(height: 12),
+                ],
+                _card(
+                  title: 'Reviews uploaded by instructors',
+                  icon: Icons.quiz_rounded,
+                  trailing: Text(
+                      '${revs.length} review${revs.length == 1 ? '' : 's'}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                  child: revs.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Center(
+                            child: Text('No reviews match these filters.',
+                                style: TextStyle(color: Colors.grey[500])),
+                          ),
+                        )
+                      : Column(children: [
+                          for (int i = 0; i < revs.length; i++) ...[
+                            _reviewRow(revs[i], byQuiz[revs[i].id] ?? []),
+                            if (i != revs.length - 1)
+                              const Divider(height: 1, color: _border),
+                          ],
+                        ]),
+                ),
+                const SizedBox(height: 12),
+                if (subjectKeys.isNotEmpty)
                   _card(
                     title: 'Board-exam statistics by subject',
                     icon: Icons.school_outlined,
                     child: Column(children: [
                       for (int i = 0; i < subjectKeys.length; i++) ...[
-                        _subjectRow(subjectKeys[i], bySubject[subjectKeys[i]]!),
+                        _subjectRow(
+                            subjectKeys[i],
+                            bySubject[subjectKeys[i]] ?? [],
+                            reviewCountBySubject[subjectKeys[i]] ?? 0),
                         if (i != subjectKeys.length - 1)
                           const Divider(height: 1, color: _border),
                       ],
                     ]),
                   ),
-                  const SizedBox(height: 12),
-                  _card(
-                    title: 'Examinee results',
-                    icon: Icons.list_alt_rounded,
-                    trailing: Text('${rows.length} attempt(s)',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                    child: _table(rows),
-                  ),
-                ],
+                if (subjectKeys.isNotEmpty) const SizedBox(height: 12),
+                _card(
+                  title: 'Examinee results',
+                  icon: Icons.list_alt_rounded,
+                  trailing: Text(
+                      '${rows.length} attempt${rows.length == 1 ? '' : 's'}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                  child: rows.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Center(
+                            child: Text(
+                                'No student has taken an exam that matches these filters.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey[500])),
+                          ),
+                        )
+                      : _table(rows),
+                ),
               ],
             ),
           ),
@@ -338,7 +438,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 await Clipboard.setData(ClipboardData(text: _csv(rows)));
                 if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('CSV copied. Paste it into Excel or Google Sheets.'),
+                  content:
+                      Text('CSV copied. Paste it into Excel or Google Sheets.'),
                   behavior: SnackBarBehavior.floating,
                 ));
               },
@@ -353,10 +454,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
     ]);
   }
 
-  Widget _filters(
-      List<String> subjects, List<String> years, Map<String, String> quizzes) {
-    final hasFilter =
-        _subject != null || _quizId != null || _year != null || _range != null;
+  Widget _filters(List<String> subjects, List<String> years,
+      List<String> instructors, Map<String, String> quizzes) {
+    final hasFilter = _subject != null ||
+        _quizId != null ||
+        _year != null ||
+        _instructor != null ||
+        _range != null;
     return Wrap(
       spacing: 10,
       runSpacing: 10,
@@ -372,13 +476,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
           }),
         ),
         _dropdown(
+          label: 'Instructor',
+          value: _instructor,
+          options: {for (final i in instructors) i: i},
+          onChanged: (v) => setState(() {
+            _instructor = v;
+            _quizId = null;
+          }),
+        ),
+        _dropdown(
           label: 'Review / exam',
           value: _quizId,
           options: quizzes,
           onChanged: (v) => setState(() => _quizId = v),
         ),
         _dropdown(
-          label: 'Year level',
+          label: 'Student year level',
           value: _year,
           options: {for (final y in years) y: y},
           onChanged: (v) => setState(() => _year = v),
@@ -412,6 +525,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               _subject = null;
               _quizId = null;
               _year = null;
+              _instructor = null;
               _range = null;
             }),
             child: const Text('Clear filters'),
@@ -466,9 +580,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
       (w) => _tile(w, Icons.cancel_outlined, 'Failed', _pct(failedN / n * 100),
           color: _red, sub: '$failedN student(s)'),
       (w) => _tile(w, Icons.bar_chart_rounded, 'Average score', _pct(avg)),
-      (w) => _tile(w, Icons.arrow_upward_rounded, 'Highest', _pct(highest.percent),
+      (w) => _tile(w, Icons.arrow_upward_rounded, 'Highest',
+          _pct(highest.percent),
           sub: highest.name),
-      (w) => _tile(w, Icons.arrow_downward_rounded, 'Lowest', _pct(lowest.percent),
+      (w) => _tile(w, Icons.arrow_downward_rounded, 'Lowest',
+          _pct(lowest.percent),
           sub: lowest.name),
     ];
     return LayoutBuilder(builder: (context, c) {
@@ -590,12 +706,110 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _subjectRow(String subject, List<_R> list) {
+  Widget _chip(IconData icon, String label, {Color? color}) {
+    final c = color ?? const Color(0xFF3949AB);
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 220),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 11, color: c),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 11, color: c, fontWeight: FontWeight.w600)),
+        ),
+      ]),
+    );
+  }
+
+  /// One uploaded review, with its outcome. Tap to filter results to it.
+  Widget _reviewRow(_Rev v, List<_R> list) {
     final n = list.length;
     final p = list.where((r) => r.passed).length;
     final f = n - p;
-    final avg = list.fold<double>(0, (a, r) => a + r.percent) / n;
-    final top = list.first;
+    final avg = n == 0
+        ? 0.0
+        : list.fold<double>(0, (a, r) => a + r.percent) / n;
+
+    return InkWell(
+      onTap: () => setState(() => _quizId = v.id),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(v.title,
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 14, color: _brand)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 6, runSpacing: 4, children: [
+              _chip(Icons.menu_book_rounded, v.subject),
+              _chip(Icons.person_rounded,
+                  v.instructor.isEmpty ? 'Unknown instructor' : v.instructor),
+              if (v.year.isNotEmpty) _chip(Icons.school_rounded, v.year),
+              _chip(Icons.help_outline_rounded,
+                  '${v.questions} question${v.questions == 1 ? '' : 's'}'),
+              _chip(Icons.flag_rounded, 'Passing ${v.passing.toStringAsFixed(0)}%'),
+              _chip(Icons.event_rounded, 'Posted ${_date(v.createdAt)}'),
+              if (v.archived)
+                _chip(Icons.inventory_2_rounded, 'Archived',
+                    color: const Color(0xFFD84315)),
+            ]),
+            const SizedBox(height: 8),
+            if (n == 0)
+              const Text('No students have taken this review yet.',
+                  style: TextStyle(fontSize: 12.5, color: _muted))
+            else ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  height: 8,
+                  child: Row(children: [
+                    if (p > 0)
+                      Expanded(flex: p, child: Container(color: _green)),
+                    if (f > 0)
+                      Expanded(flex: f, child: Container(color: _red)),
+                  ]),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(spacing: 16, runSpacing: 4, children: [
+                Text('Taken by $n',
+                    style: const TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.w600)),
+                Text('Passed ${_pct(p / n * 100)} ($p)',
+                    style: const TextStyle(
+                        fontSize: 12.5,
+                        color: _green,
+                        fontWeight: FontWeight.w600)),
+                Text('Failed ${_pct(f / n * 100)} ($f)',
+                    style: const TextStyle(
+                        fontSize: 12.5,
+                        color: _red,
+                        fontWeight: FontWeight.w600)),
+                Text('Average ${_pct(avg)}',
+                    style: const TextStyle(fontSize: 12.5)),
+                Text(
+                    'Top: ${list.first.name} (${_pct(list.first.percent)})',
+                    style: const TextStyle(fontSize: 12.5)),
+              ]),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _subjectRow(String subject, List<_R> list, int reviewCount) {
+    final n = list.length;
+    final p = list.where((r) => r.passed).length;
+    final f = n - p;
     return Padding(
       padding: const EdgeInsets.all(14),
       child: Column(
@@ -607,33 +821,45 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   style: const TextStyle(
                       fontWeight: FontWeight.bold, fontSize: 14)),
             ),
-            Text('$n taker${n == 1 ? '' : 's'}',
+            Text(
+                '$reviewCount review${reviewCount == 1 ? '' : 's'} · '
+                '$n taker${n == 1 ? '' : 's'}',
                 style: const TextStyle(fontSize: 12, color: _muted)),
           ]),
           const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              height: 10,
-              child: Row(children: [
-                if (p > 0) Expanded(flex: p, child: Container(color: _green)),
-                if (f > 0) Expanded(flex: f, child: Container(color: _red)),
-              ]),
+          if (n == 0)
+            const Text('No students have taken this subject yet.',
+                style: TextStyle(fontSize: 12.5, color: _muted))
+          else ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                height: 10,
+                child: Row(children: [
+                  if (p > 0) Expanded(flex: p, child: Container(color: _green)),
+                  if (f > 0) Expanded(flex: f, child: Container(color: _red)),
+                ]),
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Wrap(spacing: 16, runSpacing: 4, children: [
-            Text('Passed ${_pct(p / n * 100)} ($p)',
-                style: const TextStyle(
-                    fontSize: 12.5, color: _green, fontWeight: FontWeight.w600)),
-            Text('Failed ${_pct(f / n * 100)} ($f)',
-                style: const TextStyle(
-                    fontSize: 12.5, color: _red, fontWeight: FontWeight.w600)),
-            Text('Average ${_pct(avg)}',
-                style: const TextStyle(fontSize: 12.5, color: Colors.black87)),
-            Text('Top: ${top.name} (${_pct(top.percent)})',
-                style: const TextStyle(fontSize: 12.5, color: Colors.black87)),
-          ]),
+            const SizedBox(height: 8),
+            Wrap(spacing: 16, runSpacing: 4, children: [
+              Text('Passed ${_pct(p / n * 100)} ($p)',
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      color: _green,
+                      fontWeight: FontWeight.w600)),
+              Text('Failed ${_pct(f / n * 100)} ($f)',
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      color: _red,
+                      fontWeight: FontWeight.w600)),
+              Text(
+                  'Average ${_pct(list.fold<double>(0, (a, r) => a + r.percent) / n)}',
+                  style: const TextStyle(fontSize: 12.5)),
+              Text('Top: ${list.first.name} (${_pct(list.first.percent)})',
+                  style: const TextStyle(fontSize: 12.5)),
+            ]),
+          ],
         ],
       ),
     );
@@ -705,7 +931,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final bg = passed ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
       child: Text(passed ? 'Passed' : 'Failed',
           style: TextStyle(
               color: color, fontWeight: FontWeight.bold, fontSize: 11.5)),
@@ -738,6 +965,32 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 }
 
+/// One uploaded review (a `quizzes` document).
+class _Rev {
+  final String id;
+  final String title;
+  final String subject;
+  final String year;
+  final String instructor;
+  final int questions;
+  final double passing;
+  final bool archived;
+  final Timestamp? createdAt;
+
+  _Rev({
+    required this.id,
+    required this.title,
+    required this.subject,
+    required this.year,
+    required this.instructor,
+    required this.questions,
+    required this.passing,
+    required this.archived,
+    required this.createdAt,
+  });
+}
+
+/// One exam attempt (a `quiz_results` document).
 class _R {
   final String quizId;
   final String quizTitle;
