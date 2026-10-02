@@ -10,7 +10,7 @@ import 'curriculum_repo.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // MODULE SUBJECTS (clusters)
 //
-// Module subjects (CRIM, CLJ, CDI, FORENSIC, LEA, CA, ENG …) now live in their
+// Module subjects (CRIM, CLJ, CDI, FORENSIC, LEA, CA, ENG …) live in their
 // OWN Firestore collection: `moduleSubjects`
 //   {code, label, createdAt, archived, archivedAt}
 //
@@ -19,27 +19,21 @@ import 'curriculum_repo.dart';
 //   • Manage Curriculum      -> `subjects`        (curriculum_repo.dart)
 //   • Add Module > Add / manage subjects -> `moduleSubjects` (this file)
 //
-// Modules keep referencing their subject through `cluster: <code>`, so
-// existing modules are unaffected.
+// Modules keep referencing their subject through `cluster: <code>`.
 //
-// NEW: each module can ALSO be linked to one curriculum subject, e.g. a CDI
+// Each module can ALSO be linked to one curriculum subject, e.g. a CDI
 // module is linked to "CDI 3". This is stored on the module as
 //   subject        (e.g. 'CDI 3')
 //   subjectLabel   (e.g. 'Specialized Crime Investigation 2 …')
 // A curriculum subject belongs to a cluster when its code starts with the
-// cluster code followed by a space ("CDI 3" belongs to "CDI"). Modules saved
-// before this change have no `subject` field; they still work and simply show
-// their cluster only.
+// cluster code followed by a space ("CDI 3" belongs to "CDI").
 //
-// Students see a confirmation dialog ("This module is from CDI") before a
-// module is opened.
-//
-// Color/icon are NOT stored — they're derived from the cluster's `code`.
+// STUDENT SIDE: StudentModulesScreen now navigates
+//   Year Level -> Semester -> Subject -> Modules -> Read Module
 //
 // ARCHIVE MODEL: module subjects are never hard-deleted from the active list.
 // Archiving sets `archived: true` and cascade-archives every active module
-// under it. Archived subjects appear in the Archived tab with Restore (and,
-// for admins, Delete Permanently).
+// under it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const String _kModuleSubjectsCol = 'moduleSubjects';
@@ -118,9 +112,6 @@ bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
 // The 7 original subject clusters. They are built into the app, so they are
 // ALWAYS available in the module subject picker, never depend on Firestore,
 // and can never be archived or deleted.
-//
-// IMPORTANT: check the labels below match what you used before. Only the
-// `code` matters for existing modules; the label is just the display name.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const List<List<String>> _kDefaultModuleSubjects = [
@@ -530,8 +521,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
               ),
             ),
           ),
-          // The separate "Manage Subjects" button was removed. Subject
-          // management now lives only inside the Add Module flow
+          // Subject management lives only inside the Add Module flow
           // ("Add / manage subjects").
           body: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -688,77 +678,79 @@ class _ManageModuleSubjectsScreenState
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
             child: TabBarView(
-          children: [
-            // ── Active ───────────────────────────────────────────────
-            StreamBuilder<List<_Cluster>>(
-              stream: _subjectsStream(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  return Center(
-                    child: Text('Error: ${snap.error}',
-                        style: const TextStyle(color: Colors.red)),
-                  );
-                }
-                if (!snap.hasData) {
-                  return const Center(
-                      child: CircularProgressIndicator(
-                          color: Color(0xFF1A237E)));
-                }
-                final subjects = snap.data!;
-                if (subjects.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'No subjects yet.\nTap "Add Subject" to create one.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey[500], fontSize: 14),
-                    ),
-                  );
-                }
-                return ListView(
-                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE8EAF6),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(Icons.info_outline_rounded,
-                              color: Color(0xFF1A237E), size: 16),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'These subjects are used when uploading modules. '
-                              'Subjects with a lock are the 7 default subjects '
-                              'and cannot be archived. Subjects you add can be '
-                              'archived (this also archives their modules) and '
-                              'restored later.',
-                              style: TextStyle(
-                                  fontSize: 12, color: Color(0xFF1A237E)),
-                            ),
+              children: [
+                // ── Active ───────────────────────────────────────────────
+                StreamBuilder<List<_Cluster>>(
+                  stream: _subjectsStream(),
+                  builder: (context, snap) {
+                    if (snap.hasError) {
+                      return Center(
+                        child: Text('Error: ${snap.error}',
+                            style: const TextStyle(color: Colors.red)),
+                      );
+                    }
+                    if (!snap.hasData) {
+                      return const Center(
+                          child: CircularProgressIndicator(
+                              color: Color(0xFF1A237E)));
+                    }
+                    final subjects = snap.data!;
+                    if (subjects.isEmpty) {
+                      return Center(
+                        child: Text(
+                          'No subjects yet.\nTap "Add Subject" to create one.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: Colors.grey[500], fontSize: 14),
+                        ),
+                      );
+                    }
+                    return ListView(
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8EAF6),
+                            borderRadius: BorderRadius.circular(10),
                           ),
+                          child: const Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.info_outline_rounded,
+                                  color: Color(0xFF1A237E), size: 16),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'These subjects are used when uploading modules. '
+                                  'Subjects with a lock are the 7 default subjects '
+                                  'and cannot be archived. Subjects you add can be '
+                                  'archived (this also archives their modules) and '
+                                  'restored later.',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF1A237E)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        for (final s in subjects) ...[
+                          _ManageSubjectRow(
+                            cluster: s,
+                            onArchive: () => archiveSubject(context, s),
+                          ),
+                          const SizedBox(height: 8),
                         ],
-                      ),
-                    ),
-                    for (final s in subjects) ...[
-                      _ManageSubjectRow(
-                        cluster: s,
-                        onArchive: () => archiveSubject(context, s),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ],
-                );
-              },
-            ),
+                      ],
+                    );
+                  },
+                ),
 
-            // ── Archived ─────────────────────────────────────────────
-            ArchivedSubjectsList(canDelete: widget.isAdmin),
-          ],
+                // ── Archived ─────────────────────────────────────────────
+                ArchivedSubjectsList(canDelete: widget.isAdmin),
+              ],
             ),
           ),
         ),
@@ -768,347 +760,405 @@ class _ManageModuleSubjectsScreenState
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StudentModulesScreen
+// StudentModulesScreen  (REDESIGNED)
+//
+// Flow: Year Level -> Semester -> Subject -> Modules -> Read Module
+//
+// Data mapping (uses existing fields, no Firestore changes):
+//   Year/Semester/Subject  = curriculum `subjects` (CurriculumRepo.streamAll)
+//   Modules of a subject   = `modules` where module.subject == subject.code
+//
+// Cleanup rules:
+//   • Modules with no curriculum `subject` are hidden (no year/semester).
+//   • Placeholder titles like "CLJ(0)" or "()" are hidden.
+//   • Duplicates (same subject + same title) are shown once.
+//   • Modules are sorted by the first number in the title, then A–Z.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class StudentModulesScreen extends StatefulWidget {
-  const StudentModulesScreen({super.key});
+  /// Optional: pass the student's year (e.g. '4th Year') to tag it "Your year".
+  final String? studentYear;
+  const StudentModulesScreen({super.key, this.studentYear});
 
   @override
   State<StudentModulesScreen> createState() => _StudentModulesScreenState();
 }
 
 class _StudentModulesScreenState extends State<StudentModulesScreen> {
-  String _selectedCluster = 'All';
+  static const _navy = Color(0xFF1A237E);
 
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<List<_Cluster>>(
-      stream: _subjectsStream(),
-      builder: (context, subjSnap) {
-        final clusters = subjSnap.data ?? [];
+  late final Stream<List<Subject>> _subjectsStream =
+      CurriculumRepo.streamAll();
+  late final Stream<QuerySnapshot> _modulesStream = FirebaseFirestore.instance
+      .collection('modules')
+      .where('archived', isEqualTo: false)
+      .snapshots();
 
-        return Column(
-          children: [
-            _ClusterFilterBar(
-              clusters: clusters,
-              selected: _selectedCluster,
-              onSelect: (v) => setState(() => _selectedCluster = v),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('modules')
-                    .where('archived', isEqualTo: false)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting &&
-                      !snapshot.hasData) {
-                    return const Center(
-                        child: CircularProgressIndicator(
-                            color: Color(0xFF1A237E)));
-                  }
+  String? _year;
+  String? _sem;
+  Subject? _subject;
 
-                  final allDocs = snapshot.data?.docs ?? [];
-                  final docs = _selectedCluster == 'All'
-                      ? allDocs
-                      : allDocs.where((d) {
-                          final data = d.data() as Map<String, dynamic>;
-                          return (data['cluster'] as String? ?? '') ==
-                              _selectedCluster;
-                        }).toList();
+  int get _level =>
+      _subject != null ? 3 : (_sem != null ? 2 : (_year != null ? 1 : 0));
 
-                  if (allDocs.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.folder_open_rounded,
-                              size: 72, color: Colors.grey[300]),
-                          const SizedBox(height: 14),
-                          Text('No modules available yet.',
-                              style: TextStyle(
-                                  color: Colors.grey[500], fontSize: 15)),
-                          const SizedBox(height: 6),
-                          Text("Your teacher hasn't added any modules yet.",
-                              style: TextStyle(
-                                  color: Colors.grey[400], fontSize: 13)),
-                        ],
-                      ),
-                    );
-                  }
+  void _back() => setState(() {
+        if (_subject != null) {
+          _subject = null;
+        } else if (_sem != null) {
+          _sem = null;
+        } else {
+          _year = null;
+        }
+      });
 
-                  if (docs.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.folder_off_rounded,
-                              size: 64, color: Colors.grey[300]),
-                          const SizedBox(height: 12),
-                          Text(
-                            'No modules for $_selectedCluster yet.',
-                            style: TextStyle(
-                                color: Colors.grey[500], fontSize: 15),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
+  // ── Data cleanup ──────────────────────────────────────────────────────────
 
-                  return ListView.separated(
-                    padding: const EdgeInsets.all(14),
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, index) {
-                      final data = docs[index].data() as Map<String, dynamic>;
-                      return _ModuleCard(data: data, isTeacher: false);
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-      },
-    );
+  static bool _invalidTitle(String t) =>
+      t.isEmpty || RegExp(r'^[A-Za-z ]*\(\s*\d*\s*\)$').hasMatch(t);
+
+  static int _numIn(String t) {
+    final m = RegExp(r'\d+').firstMatch(t);
+    return m == null ? 9999 : int.parse(m.group(0)!);
   }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Subject Filter Bar (student side)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _ClusterFilterBar extends StatelessWidget {
-  final List<_Cluster> clusters;
-  final String selected;
-  final ValueChanged<String> onSelect;
-
-  const _ClusterFilterBar({
-    required this.clusters,
-    required this.selected,
-    required this.onSelect,
-  });
-
-  _Cluster? _selectedCluster() {
-    if (selected == 'All') return null;
-    for (final c in clusters) {
-      if (c.code == selected) return c;
+  /// subject code (lowercase) -> clean, de-duplicated, numerically sorted list
+  Map<String, List<Map<String, dynamic>>> _group(
+      List<QueryDocumentSnapshot> docs) {
+    final seen = <String>{};
+    final out = <String, List<Map<String, dynamic>>>{};
+    for (final d in docs) {
+      final m = d.data() as Map<String, dynamic>;
+      final code = (m['subject'] as String? ?? '').trim().toLowerCase();
+      final title = (m['title'] as String? ?? '').trim();
+      if (code.isEmpty || _invalidTitle(title)) continue;
+      final key = '$code|${title.toLowerCase().replaceAll(RegExp(r'\s+'), '')}';
+      if (!seen.add(key)) continue;
+      (out[code] ??= []).add(m);
     }
-    return null;
+    for (final list in out.values) {
+      list.sort((a, b) {
+        final ta = (a['title'] as String? ?? '').trim();
+        final tb = (b['title'] as String? ?? '').trim();
+        final n = _numIn(ta).compareTo(_numIn(tb));
+        return n != 0 ? n : ta.toLowerCase().compareTo(tb.toLowerCase());
+      });
+    }
+    return out;
   }
 
-  Future<void> _openMenu(BuildContext context) async {
-    final result = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _SubjectMenuSheet(
-        clusters: clusters,
-        selected: selected,
-      ),
-    );
-    if (result != null) onSelect(result);
-  }
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    final activeCluster = _selectedCluster();
-    final color = activeCluster?.color ?? const Color(0xFF1A237E);
-    final icon = activeCluster?.icon ?? Icons.apps_rounded;
-    final label = activeCluster != null ? activeCluster.code : 'All Subjects';
+    return PopScope(
+      canPop: _level == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _back();
+      },
+      child: StreamBuilder<List<Subject>>(
+        stream: _subjectsStream,
+        builder: (context, subjSnap) => StreamBuilder<QuerySnapshot>(
+          stream: _modulesStream,
+          builder: (context, modSnap) {
+            if (!subjSnap.hasData || !modSnap.hasData) {
+              return const Center(
+                  child: CircularProgressIndicator(color: _navy));
+            }
+            final subjects = subjSnap.data!;
+            final byCode = _group(modSnap.data!.docs);
+            int count(Subject s) => byCode[s.code.trim().toLowerCase()]
+                    ?.length ??
+                0;
 
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      child: InkWell(
-        onTap: () => _openMenu(context),
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withValues(alpha: 0.3)),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.menu_rounded, size: 18, color: color),
-              const SizedBox(width: 10),
-              Icon(icon, size: 15, color: color),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: color,
-                  ),
-                ),
-              ),
-              Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: color),
-            ],
-          ),
+            return Column(
+              children: [
+                _header(),
+                const Divider(height: 1),
+                Expanded(child: _body(subjects, byCode, count)),
+              ],
+            );
+          },
         ),
       ),
     );
   }
-}
 
-class _SubjectMenuSheet extends StatelessWidget {
-  final List<_Cluster> clusters;
-  final String selected;
+  // ── Header: Back button + always-visible current selection ───────────────
 
-  const _SubjectMenuSheet({required this.clusters, required this.selected});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _header() {
+    final trail = [if (_year != null) _year!, if (_sem != null) _sem!]
+        .join(' • ');
     return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.7),
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      width: double.infinity,
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2)),
+          if (_level > 0)
+            TextButton.icon(
+              onPressed: _back,
+              icon: const Icon(Icons.arrow_back_rounded, size: 18),
+              label: const Text('Back'),
+              style: TextButton.styleFrom(
+                foregroundColor: _navy,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
-          ),
-          Row(
-            children: [
-              const Icon(Icons.menu_rounded,
-                  color: Color(0xFF1A237E), size: 20),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('Filter by Subject',
-                    style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1A237E))),
+          if (_level == 0)
+            const Text('Modules',
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.bold, color: _navy))
+          else
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: _navy.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _navy.withValues(alpha: 0.25)),
               ),
-              IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded,
-                    color: Color(0xFF1A237E), size: 20),
-                splashRadius: 20,
-                padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 32, minHeight: 32),
-                tooltip: 'Close',
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Flexible(
-            child: SingleChildScrollView(
-              child: Column(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _SubjectMenuRow(
-                    label: 'All Subjects',
-                    icon: Icons.apps_rounded,
-                    color: const Color(0xFF1A237E),
-                    isSelected: selected == 'All',
-                    onTap: () => Navigator.pop(context, 'All'),
+                  const Icon(Icons.school_rounded, size: 16, color: _navy),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(trail,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: _navy)),
                   ),
-                  const SizedBox(height: 8),
-                  if (clusters.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Text(
-                        'No subjects yet.',
-                        style:
-                            TextStyle(color: Colors.grey[500], fontSize: 12),
-                      ),
-                    ),
-                  for (final c in clusters) ...[
-                    _SubjectMenuRow(
-                      label: '${c.code} — ${c.label}',
-                      icon: c.icon,
-                      color: c.color,
-                      isSelected: selected == c.code,
-                      onTap: () => Navigator.pop(context, c.code),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
                 ],
               ),
             ),
-          ),
+          if (_subject != null) ...[
+            const SizedBox(height: 10),
+            Text(_subject!.code,
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: _colorForCode(_prefix(_subject!.code)))),
+            Text(_subject!.description,
+                style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+          ] else
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                const [
+                  'Select your year level',
+                  'Select a semester',
+                  'Select a subject',
+                ][_level],
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+              ),
+            ),
         ],
       ),
     );
   }
+
+  String _prefix(String code) => code.trim().split(' ').first.toUpperCase();
+
+  // ── Body: one list per level ──────────────────────────────────────────────
+
+  Widget _body(List<Subject> subjects,
+      Map<String, List<Map<String, dynamic>>> byCode, int Function(Subject) count) {
+    // Level 3: modules of the chosen subject.
+    if (_subject != null) {
+      final mods = byCode[_subject!.code.trim().toLowerCase()] ?? [];
+      if (mods.isEmpty) {
+        return _empty(Icons.folder_open_rounded,
+            'No modules for ${_subject!.code} yet.');
+      }
+      return ListView.builder(
+        padding: const EdgeInsets.all(14),
+        itemCount: mods.length,
+        itemBuilder: (_, i) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Text('Module ${i + 1}',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[600])),
+              ),
+              _ModuleCard(data: mods[i], isTeacher: false), // Read Module kept
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Level 2: subjects for the chosen year + semester.
+    if (_sem != null) {
+      final list = subjects
+          .where((s) => s.yearLevel == _year && s.semester == _sem)
+          .toList();
+      if (list.isEmpty) {
+        return _empty(Icons.menu_book_rounded,
+            'No subjects for $_year • $_sem yet.');
+      }
+      return _list([
+        for (final s in list)
+          _NavCard(
+            icon: Icons.menu_book_rounded,
+            color: _colorForCode(_prefix(s.code)),
+            title: '${s.code} — ${s.description}',
+            subtitle: '${count(s)} ${count(s) == 1 ? 'Module' : 'Modules'}',
+            onTap: () => setState(() => _subject = s),
+          ),
+      ]);
+    }
+
+    // Level 1: semesters of the chosen year.
+    if (_year != null) {
+      return _list([
+        for (final sem in CurriculumRepo.semesters)
+          Builder(builder: (_) {
+            final inSem = subjects
+                .where((s) => s.yearLevel == _year && s.semester == sem)
+                .toList();
+            final mods = inSem.fold<int>(0, (n, s) => n + count(s));
+            return _NavCard(
+              icon: Icons.calendar_month_rounded,
+              color: _navy,
+              title: sem,
+              subtitle: '${inSem.length} Subjects • $mods Modules',
+              onTap: () => setState(() => _sem = sem),
+            );
+          }),
+      ]);
+    }
+
+    // Level 0: year levels.
+    return _list([
+      for (final y in CurriculumRepo.yearLevels)
+        Builder(builder: (_) {
+          final inYear = subjects.where((s) => s.yearLevel == y).toList();
+          final mods = inYear.fold<int>(0, (n, s) => n + count(s));
+          return _NavCard(
+            icon: Icons.school_rounded,
+            color: _navy,
+            title: y,
+            tag: widget.studentYear == y ? 'Your year' : null,
+            subtitle: '${inYear.length} Subjects • $mods Modules',
+            onTap: () => setState(() => _year = y),
+          );
+        }),
+    ]);
+  }
+
+  Widget _list(List<Widget> children) => ListView.separated(
+        padding: const EdgeInsets.all(14),
+        itemCount: children.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (_, i) => children[i],
+      );
+
+  Widget _empty(IconData icon, String msg) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 64, color: Colors.grey[300]),
+            const SizedBox(height: 12),
+            Text(msg,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[500], fontSize: 15)),
+          ],
+        ),
+      );
 }
 
-class _SubjectMenuRow extends StatelessWidget {
-  final String label;
+/// One tappable row used at the Year, Semester and Subject levels.
+class _NavCard extends StatelessWidget {
   final IconData icon;
   final Color color;
-  final bool isSelected;
+  final String title;
+  final String subtitle;
+  final String? tag;
   final VoidCallback onTap;
 
-  const _SubjectMenuRow({
-    required this.label,
+  const _NavCard({
     required this.icon,
     required this.color,
-    required this.isSelected,
+    required this.title,
+    required this.subtitle,
     required this.onTap,
+    this.tag,
   });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: isSelected
-              ? color.withValues(alpha: 0.1)
-              : color.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-              color: isSelected ? color : color.withValues(alpha: 0.2),
-              width: isSelected ? 1.5 : 1),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withValues(alpha: 0.25)),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF1A237E).withValues(alpha: 0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Row(
           children: [
             Container(
-              width: 34,
-              height: 34,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(9),
+                color: color.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, color: color, size: 18),
+              child: Icon(icon, color: color, size: 24),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: color)),
+                  const SizedBox(height: 3),
+                  Text(subtitle,
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[600])),
+                ],
               ),
             ),
-            if (isSelected)
-              Icon(Icons.check_circle_rounded, color: color, size: 20),
+            if (tag != null)
+              Container(
+                margin: const EdgeInsets.only(right: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(tag!,
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: color)),
+              ),
+            Icon(Icons.chevron_right_rounded, color: color),
           ],
         ),
       ),
@@ -1384,7 +1434,8 @@ class _ModuleCardState extends State<_ModuleCard> {
                           spacing: 6,
                           runSpacing: 4,
                           children: [
-                            _chip(clusterIcon, clusterCode, color: clusterColor),
+                            _chip(clusterIcon, clusterCode,
+                                color: clusterColor),
                             if (hasSubject)
                               _chip(
                                   Icons.bookmark_rounded,
@@ -1645,8 +1696,6 @@ void _showSuccessDialog(
 // Adds a MODULE subject (collection `moduleSubjects`). It is separate from the
 // curriculum. The new subject appears immediately in the Add Module subject
 // picker and in Manage Subjects.
-//
-// Managing (archive / restore) lives in ManageModuleSubjectsScreen.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AddSubjectSheet extends StatefulWidget {
@@ -2170,11 +2219,10 @@ class _SmallActionButton extends StatelessWidget {
 // The Subject picker is LIVE: it listens to the active module subjects, so a
 // subject added (or archived/restored) while this sheet is open shows up
 // right away. The "Add / manage subjects" button opens Manage Subjects.
-// This is now the ONLY entry point to subject management.
 //
-// NEW: after choosing a subject group (e.g. CDI), a "Curriculum subject"
-// dropdown lists that group's curriculum subjects (CDI 1 … CDI 9) from the
-// LIVE curriculum. It is required when the group has curriculum subjects, and
+// After choosing a subject group (e.g. CDI), a "Curriculum subject" dropdown
+// lists that group's curriculum subjects (CDI 1 … CDI 9) from the LIVE
+// curriculum. It is required when the group has curriculum subjects, and
 // hidden when it has none (e.g. ENG or a custom subject).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2607,8 +2655,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                       color: Color(0xFF1A237E), size: 20),
                   splashRadius: 20,
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                      minWidth: 32, minHeight: 32),
+                  constraints:
+                      const BoxConstraints(minWidth: 32, minHeight: 32),
                   tooltip: 'Close',
                 ),
               ],
