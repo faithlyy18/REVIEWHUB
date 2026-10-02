@@ -28,6 +28,12 @@ import 'curriculum_repo.dart';
 // A curriculum subject belongs to a cluster when its code starts with the
 // cluster code followed by a space ("CDI 3" belongs to "CDI").
 //
+// ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen now navigates
+//   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
+// Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
+// the first word of `subject`, e.g. "CDI 3" -> "CDI"). Uploading a new module
+// never creates a new category by itself: it simply joins the existing group.
+//
 // STUDENT SIDE: StudentModulesScreen now navigates
 //   Year Level -> Semester -> Subject -> Modules -> Read Module
 //
@@ -388,6 +394,16 @@ Future<void> permanentlyDeleteSubject(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TeacherModulesScreen (shared by Instructor + Admin accountTypes)
+//
+// Flow:  Subject categories (CDI, CLJ, CRIM …)  ->  that subject's modules
+//
+//   • Categories are built automatically from each module's `cluster` code
+//     (fallback: first word of its `subject`, e.g. "CDI 3" -> "CDI").
+//   • Only categories that currently have modules are listed, each with its
+//     module count. A new upload joins its existing category automatically.
+//   • Inside a category the modules are sorted numerically
+//     (CDI 1 -> CDI 2 -> … -> CDI 10), then by title.
+//   • Every module card keeps Preview Module + Archive.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TeacherModulesScreen extends StatefulWidget {
@@ -398,11 +414,24 @@ class TeacherModulesScreen extends StatefulWidget {
 }
 
 class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
+  static const _navy = Color(0xFF1A237E);
+
   final _user = FirebaseAuth.instance.currentUser;
   bool _isAdmin = false;
 
   StreamSubscription<List<_Cluster>>? _subjectsSub;
   List<String>? _prevCodes;
+
+  late final Stream<List<_Cluster>> _clustersStream = _subjectsStream();
+  late final Stream<QuerySnapshot> _modulesStream = FirebaseFirestore.instance
+      .collection('modules')
+      .where('uploadedBy', isEqualTo: _user?.uid)
+      .where('archived', isEqualTo: false)
+      .snapshots();
+
+  /// The subject category currently opened (e.g. 'CDI'), or null when the
+  /// category list is showing.
+  String? _categoryCode;
 
   @override
   void initState() {
@@ -493,101 +522,306 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     _showSuccessDialog(context, title, cluster);
   }
 
+  // ── Automatic grouping helpers ──────────────────────────────────────────
+
+  /// The category a module belongs to, decided automatically:
+  ///   1. its `cluster` code (e.g. 'CDI'), else
+  ///   2. the first word of its `subject` (e.g. 'CDI 3' -> 'CDI'), else
+  ///   3. 'OTHER' for old modules that have neither.
+  /// Always upper-cased/trimmed, so "cdi" and "CDI " never split a category.
+  static String _groupCode(Map<String, dynamic> m) {
+    final cluster = (m['cluster'] as String? ?? '').trim().toUpperCase();
+    if (cluster.isNotEmpty) return cluster;
+    final subject = (m['subject'] as String? ?? '').trim().toUpperCase();
+    if (subject.isNotEmpty) return subject.split(RegExp(r'\s+')).first;
+    return 'OTHER';
+  }
+
+  /// First whole number inside [s] ("CDI 10" -> 10). Text without a number
+  /// returns a huge value so it sorts after the numbered ones.
+  static int _firstNumber(String s) {
+    final m = RegExp(r'\d+').firstMatch(s);
+    if (m == null) return 1 << 30;
+    return int.tryParse(m.group(0)!) ?? (1 << 30);
+  }
+
+  /// CDI 1 -> CDI 2 -> … -> CDI 10 (numeric, not text order), then by the
+  /// number in the title, then A–Z.
+  static int _compareModules(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final subjA = (a['subject'] as String? ?? '').trim();
+    final subjB = (b['subject'] as String? ?? '').trim();
+    final n = _firstNumber(subjA).compareTo(_firstNumber(subjB));
+    if (n != 0) return n;
+
+    final titleA = (a['title'] as String? ?? '').trim();
+    final titleB = (b['title'] as String? ?? '').trim();
+    final t = _firstNumber(titleA).compareTo(_firstNumber(titleB));
+    if (t != 0) return t;
+
+    return titleA.toLowerCase().compareTo(titleB.toLowerCase());
+  }
+
+  /// Full name of a category, e.g. 'Criminal Detection and Investigation'.
+  String _labelFor(String code, List<_Cluster> clusters,
+      List<QueryDocumentSnapshot> items) {
+    for (final c in clusters) {
+      if (c.code.trim().toUpperCase() == code) return c.label;
+    }
+    for (final d in items) {
+      final label =
+          ((d.data() as Map<String, dynamic>)['clusterLabel'] as String? ?? '')
+              .trim();
+      if (label.isNotEmpty) return label;
+    }
+    return code == 'OTHER' ? 'Uncategorized' : code;
+  }
+
+  /// Default subjects first (CRIM, CLJ, CDI …), then subjects added later,
+  /// then anything unknown A–Z.
+  List<String> _sortedCodes(
+      Iterable<String> codes, List<_Cluster> clusters) {
+    final order = <String, int>{
+      for (var i = 0; i < clusters.length; i++)
+        clusters[i].code.trim().toUpperCase(): i,
+    };
+    final list = codes.toList();
+    list.sort((a, b) {
+      final ia = order[a] ?? clusters.length;
+      final ib = order[b] ?? clusters.length;
+      if (ia != ib) return ia.compareTo(ib);
+      return a.compareTo(b);
+    });
+    return list;
+  }
+
+  String _countLabel(int n) => '$n ${n == 1 ? 'Module' : 'Modules'}';
+
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<_Cluster>>(
-      stream: _subjectsStream(),
-      builder: (context, subjSnap) {
-        final clusters = subjSnap.data ?? [];
+    return PopScope(
+      // While a category is open, the system Back returns to the category
+      // list instead of leaving the screen.
+      canPop: _categoryCode == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _categoryCode = null);
+      },
+      child: StreamBuilder<List<_Cluster>>(
+        stream: _clustersStream,
+        builder: (context, subjSnap) {
+          final clusters = subjSnap.data ?? [];
 
-        return Scaffold(
-          backgroundColor: const Color(0xFFF4F6FB),
-          floatingActionButton: FloatingActionButton.extended(
-            heroTag: 'addModule',
-            backgroundColor: const Color(0xFF1A237E),
-            foregroundColor: Colors.white,
-            icon: const Icon(Icons.add_link_rounded),
-            label: const Text('Add Module',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            onPressed: () => showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              backgroundColor: Colors.transparent,
-              builder: (_) => _UploadModuleSheet(
-                teacherUid: _user?.uid ?? '',
-                clusters: clusters,
-                isAdmin: _isAdmin,
-                onSaved: _onModuleSaved,
+          return Scaffold(
+            backgroundColor: const Color(0xFFF4F6FB),
+            floatingActionButton: FloatingActionButton.extended(
+              heroTag: 'addModule',
+              backgroundColor: _navy,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add_link_rounded),
+              label: const Text('Add Module',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () => showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                backgroundColor: Colors.transparent,
+                builder: (_) => _UploadModuleSheet(
+                  teacherUid: _user?.uid ?? '',
+                  clusters: clusters,
+                  isAdmin: _isAdmin,
+                  onSaved: _onModuleSaved,
+                ),
               ),
             ),
+            // Subject management lives only inside the Add Module flow
+            // ("Add / manage subjects").
+            body: StreamBuilder<QuerySnapshot>(
+              stream: _modulesStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const Center(
+                      child: CircularProgressIndicator(color: _navy));
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+
+                if (docs.isEmpty) {
+                  _resetCategoryIfGone(const {});
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.folder_open_rounded,
+                            size: 72, color: Colors.grey[300]),
+                        const SizedBox(height: 14),
+                        Text('No modules added yet.',
+                            style: TextStyle(
+                                color: Colors.grey[500], fontSize: 15)),
+                        const SizedBox(height: 6),
+                        Text('Tap "Add Module" to get started.',
+                            style: TextStyle(
+                                color: Colors.grey[400], fontSize: 13)),
+                      ],
+                    ),
+                  );
+                }
+
+                // ── Group every active module by its subject category ───
+                final groups = <String, List<QueryDocumentSnapshot>>{};
+                for (final d in docs) {
+                  final m = d.data() as Map<String, dynamic>;
+                  groups.putIfAbsent(_groupCode(m), () => []).add(d);
+                }
+                _resetCategoryIfGone(groups);
+
+                final open = _categoryCode;
+                if (open != null && groups.containsKey(open)) {
+                  return _buildCategoryPage(
+                      open, groups[open]!, clusters);
+                }
+                return _buildCategoryList(groups, clusters);
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// If the opened category no longer has any active module (for example its
+  /// last module was just archived), go back to the category list.
+  void _resetCategoryIfGone(Map<String, List<QueryDocumentSnapshot>> groups) {
+    final open = _categoryCode;
+    if (open != null && !groups.containsKey(open)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _categoryCode == open) {
+          setState(() => _categoryCode = null);
+        }
+      });
+    }
+  }
+
+  // ── Page 1: subject categories ──────────────────────────────────────────
+
+  Widget _buildCategoryList(Map<String, List<QueryDocumentSnapshot>> groups,
+      List<_Cluster> clusters) {
+    final codes = _sortedCodes(groups.keys, clusters);
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
+      itemCount: codes.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final code = codes[index];
+        final items = groups[code]!;
+        final label = _labelFor(code, clusters, items);
+        return _NavCard(
+          icon: _iconForCode(code),
+          color: _colorForCode(code),
+          title: label == code ? code : '$code — $label',
+          subtitle: _countLabel(items.length),
+          onTap: () => setState(() => _categoryCode = code),
+        );
+      },
+    );
+  }
+
+  // ── Page 2: the modules inside one category ─────────────────────────────
+
+  Widget _buildCategoryPage(String code, List<QueryDocumentSnapshot> items,
+      List<_Cluster> clusters) {
+    final color = _colorForCode(code);
+    final label = _labelFor(code, clusters, items);
+
+    final sorted = [...items]..sort((a, b) => _compareModules(
+        a.data() as Map<String, dynamic>, b.data() as Map<String, dynamic>));
+
+    return Column(
+      children: [
+        // Header with a clear Back button
+        Container(
+          color: Colors.white,
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextButton.icon(
+                onPressed: () => setState(() => _categoryCode = null),
+                icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                label: const Text('Back'),
+                style: TextButton.styleFrom(
+                  foregroundColor: _navy,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(code,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: color)),
+              if (label != code)
+                Text(label,
+                    style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+              const SizedBox(height: 4),
+              Text(_countLabel(sorted.length),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            ],
           ),
-          // Subject management lives only inside the Add Module flow
-          // ("Add / manage subjects").
-          body: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('modules')
-                .where('uploadedBy', isEqualTo: _user?.uid)
-                .where('archived', isEqualTo: false)
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting &&
-                  !snapshot.hasData) {
-                return const Center(
-                    child:
-                        CircularProgressIndicator(color: Color(0xFF1A237E)));
-              }
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
+            itemCount: sorted.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final doc = sorted[index];
+              final data = doc.data() as Map<String, dynamic>;
+              final subjectCode = (data['subject'] as String? ?? '').trim();
 
-              final docs = snapshot.data?.docs ?? [];
-
-              docs.sort((a, b) {
-                final aTime = (a.data() as Map<String, dynamic>)['uploadedAt']
-                    as Timestamp?;
-                final bTime = (b.data() as Map<String, dynamic>)['uploadedAt']
-                    as Timestamp?;
-                if (aTime == null && bTime == null) return 0;
-                if (aTime == null) return 1;
-                if (bTime == null) return -1;
-                return bTime.compareTo(aTime);
-              });
-
-              if (docs.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.folder_open_rounded,
-                          size: 72, color: Colors.grey[300]),
-                      const SizedBox(height: 14),
-                      Text('No modules added yet.',
-                          style: TextStyle(
-                              color: Colors.grey[500], fontSize: 15)),
-                      const SizedBox(height: 6),
-                      Text('Tap "Add Module" to get started.',
-                          style: TextStyle(
-                              color: Colors.grey[400], fontSize: 13)),
-                    ],
-                  ),
-                );
-              }
-
-              return ListView.separated(
-                padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
-                itemCount: docs.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  final doc = docs[index];
-                  final data = doc.data() as Map<String, dynamic>;
-                  return _ModuleCard(
+              return Column(
+                key: ValueKey(doc.id),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (subjectCode.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 2, bottom: 6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.bookmark_rounded,
+                                size: 11, color: color),
+                            const SizedBox(width: 4),
+                            Text(subjectCode,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: color)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  _ModuleCard(
                     data: data,
                     isTeacher: true,
                     onArchive: () => _archiveModule(doc.id),
-                  );
-                },
+                  ),
+                ],
               );
             },
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 }
@@ -2510,6 +2744,9 @@ class _SmallActionButton extends StatelessWidget {
 // lists that group's curriculum subjects (CDI 1 … CDI 9) from the LIVE
 // curriculum. It is required when the group has curriculum subjects, and
 // hidden when it has none (e.g. ENG or a custom subject).
+//
+// The chosen group is saved as `cluster`, which is exactly what the Modules
+// page groups by — so a new CDI upload lands in the existing CDI category.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
