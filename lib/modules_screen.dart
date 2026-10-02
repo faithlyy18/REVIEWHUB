@@ -760,23 +760,35 @@ class _ManageModuleSubjectsScreenState
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StudentModulesScreen  (REDESIGNED)
+// StudentModulesScreen  (REDESIGNED v2)
 //
-// Flow: Year Level -> Semester -> Subject -> Modules -> Read Module
+// Flow: Subject category (CLJ, CDI, CRIM …) -> modules grouped by
+//       Year Level + Semester -> Read Module
 //
 // Data mapping (uses existing fields, no Firestore changes):
-//   Year/Semester/Subject  = curriculum `subjects` (CurriculumRepo.streamAll)
-//   Modules of a subject   = `modules` where module.subject == subject.code
+//   Category          = module.cluster            (e.g. 'CLJ')
+//   Year / Semester   = looked up from the module's curriculum subject
+//                       (module.subject, e.g. 'CLJ 6' -> 4th Year, 1st Sem)
 //
 // Cleanup rules:
 //   • Modules with no curriculum `subject` are hidden (no year/semester).
 //   • Placeholder titles like "CLJ(0)" or "()" are hidden.
 //   • Duplicates (same subject + same title) are shown once.
-//   • Modules are sorted by the first number in the title, then A–Z.
+//   • Inside each Year/Semester group, modules are ordered by curriculum
+//     subject, then by the first number in the title, then A–Z.
 // ─────────────────────────────────────────────────────────────────────────────
 
+class _ModEntry {
+  final Map<String, dynamic> data;
+  final Subject subject;
+  final String cluster;
+  const _ModEntry(this.data, this.subject, this.cluster);
+
+  String get title => (data['title'] as String? ?? '').trim();
+}
+
 class StudentModulesScreen extends StatefulWidget {
-  /// Optional: pass the student's year (e.g. '4th Year') to tag it "Your year".
+  /// Kept so existing callers still compile. No longer used.
   final String? studentYear;
   const StudentModulesScreen({super.key, this.studentYear});
 
@@ -787,29 +799,15 @@ class StudentModulesScreen extends StatefulWidget {
 class _StudentModulesScreenState extends State<StudentModulesScreen> {
   static const _navy = Color(0xFF1A237E);
 
-  late final Stream<List<Subject>> _subjectsStream =
+  late final Stream<List<_Cluster>> _clustersStream = _subjectsStream();
+  late final Stream<List<Subject>> _curriculumStream =
       CurriculumRepo.streamAll();
   late final Stream<QuerySnapshot> _modulesStream = FirebaseFirestore.instance
       .collection('modules')
       .where('archived', isEqualTo: false)
       .snapshots();
 
-  String? _year;
-  String? _sem;
-  Subject? _subject;
-
-  int get _level =>
-      _subject != null ? 3 : (_sem != null ? 2 : (_year != null ? 1 : 0));
-
-  void _back() => setState(() {
-        if (_subject != null) {
-          _subject = null;
-        } else if (_sem != null) {
-          _sem = null;
-        } else {
-          _year = null;
-        }
-      });
+  String? _categoryCode;
 
   // ── Data cleanup ──────────────────────────────────────────────────────────
 
@@ -821,29 +819,42 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
     return m == null ? 9999 : int.parse(m.group(0)!);
   }
 
-  /// subject code (lowercase) -> clean, de-duplicated, numerically sorted list
-  Map<String, List<Map<String, dynamic>>> _group(
-      List<QueryDocumentSnapshot> docs) {
+  List<_ModEntry> _clean(
+      List<QueryDocumentSnapshot> docs, Map<String, Subject> subjByCode) {
     final seen = <String>{};
-    final out = <String, List<Map<String, dynamic>>>{};
+    final out = <_ModEntry>[];
     for (final d in docs) {
       final m = d.data() as Map<String, dynamic>;
       final code = (m['subject'] as String? ?? '').trim().toLowerCase();
       final title = (m['title'] as String? ?? '').trim();
-      if (code.isEmpty || _invalidTitle(title)) continue;
+      final subject = subjByCode[code];
+      if (subject == null || _invalidTitle(title)) continue;
       final key = '$code|${title.toLowerCase().replaceAll(RegExp(r'\s+'), '')}';
       if (!seen.add(key)) continue;
-      (out[code] ??= []).add(m);
-    }
-    for (final list in out.values) {
-      list.sort((a, b) {
-        final ta = (a['title'] as String? ?? '').trim();
-        final tb = (b['title'] as String? ?? '').trim();
-        final n = _numIn(ta).compareTo(_numIn(tb));
-        return n != 0 ? n : ta.toLowerCase().compareTo(tb.toLowerCase());
-      });
+      var cluster = (m['cluster'] as String? ?? '').trim().toUpperCase();
+      if (cluster.isEmpty) {
+        cluster = subject.code.trim().split(' ').first.toUpperCase();
+      }
+      out.add(_ModEntry(m, subject, cluster));
     }
     return out;
+  }
+
+  static int _cmp(_ModEntry a, _ModEntry b) {
+    final y = CurriculumRepo.yearLevels
+        .indexOf(a.subject.yearLevel)
+        .compareTo(CurriculumRepo.yearLevels.indexOf(b.subject.yearLevel));
+    if (y != 0) return y;
+    final s = CurriculumRepo.semesters
+        .indexOf(a.subject.semester)
+        .compareTo(CurriculumRepo.semesters.indexOf(b.subject.semester));
+    if (s != 0) return s;
+    final o = a.subject.order.compareTo(b.subject.order);
+    if (o != 0) return o;
+    final c = a.subject.code.compareTo(b.subject.code);
+    if (c != 0) return c;
+    final n = _numIn(a.title).compareTo(_numIn(b.title));
+    return n != 0 ? n : a.title.toLowerCase().compareTo(b.title.toLowerCase());
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -851,53 +862,81 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _level == 0,
+      canPop: _categoryCode == null,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back();
+        if (!didPop) setState(() => _categoryCode = null);
       },
-      child: StreamBuilder<List<Subject>>(
-        stream: _subjectsStream,
-        builder: (context, subjSnap) => StreamBuilder<QuerySnapshot>(
-          stream: _modulesStream,
-          builder: (context, modSnap) {
-            if (!subjSnap.hasData || !modSnap.hasData) {
-              return const Center(
-                  child: CircularProgressIndicator(color: _navy));
-            }
-            final subjects = subjSnap.data!;
-            final byCode = _group(modSnap.data!.docs);
-            int count(Subject s) => byCode[s.code.trim().toLowerCase()]
-                    ?.length ??
-                0;
+      child: StreamBuilder<List<_Cluster>>(
+        stream: _clustersStream,
+        builder: (context, clusterSnap) => StreamBuilder<List<Subject>>(
+          stream: _curriculumStream,
+          builder: (context, subjSnap) => StreamBuilder<QuerySnapshot>(
+            stream: _modulesStream,
+            builder: (context, modSnap) {
+              if (!clusterSnap.hasData ||
+                  !subjSnap.hasData ||
+                  !modSnap.hasData) {
+                return const Center(
+                    child: CircularProgressIndicator(color: _navy));
+              }
+              final clusters = clusterSnap.data!;
+              final subjByCode = {
+                for (final s in subjSnap.data!) s.code.trim().toLowerCase(): s
+              };
+              final entries = _clean(modSnap.data!.docs, subjByCode);
 
-            return Column(
-              children: [
-                _header(),
-                const Divider(height: 1),
-                Expanded(child: _body(subjects, byCode, count)),
-              ],
-            );
-          },
+              _Cluster? selected;
+              for (final c in clusters) {
+                if (c.code.toUpperCase() == _categoryCode) selected = c;
+              }
+              final inCategory = selected == null
+                  ? <_ModEntry>[]
+                  : (entries
+                      .where((e) => e.cluster == selected!.code.toUpperCase())
+                      .toList()
+                    ..sort(_cmp));
+
+              return Column(
+                children: [
+                  _header(selected, inCategory.length),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: selected == null
+                        ? _categories(clusters, entries)
+                        : _moduleGroups(inCategory),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
   }
 
-  // ── Header: Back button + always-visible current selection ───────────────
+  // ── Header ────────────────────────────────────────────────────────────────
 
-  Widget _header() {
-    final trail = [if (_year != null) _year!, if (_sem != null) _sem!]
-        .join(' • ');
+  Widget _header(_Cluster? selected, int count) {
     return Container(
       color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_level > 0)
+          if (selected == null) ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('Modules',
+                  style: TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold, color: _navy)),
+            ),
+            const SizedBox(height: 6),
+            Text('Select a subject category',
+                style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+          ] else ...[
             TextButton.icon(
-              onPressed: _back,
+              onPressed: () => setState(() => _categoryCode = null),
               icon: const Icon(Icons.arrow_back_rounded, size: 18),
               label: const Text('Back'),
               style: TextButton.styleFrom(
@@ -907,161 +946,144 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
-          if (_level == 0)
-            const Text('Modules',
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold, color: _navy))
-          else
-            Container(
-              margin: const EdgeInsets.only(top: 4),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: _navy.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _navy.withValues(alpha: 0.25)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.school_rounded, size: 16, color: _navy),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(trail,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: _navy)),
-                  ),
-                ],
-              ),
-            ),
-          if (_subject != null) ...[
-            const SizedBox(height: 10),
-            Text(_subject!.code,
+            const SizedBox(height: 4),
+            Text(selected.code,
                 style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: _colorForCode(_prefix(_subject!.code)))),
-            Text(_subject!.description,
+                    color: selected.color)),
+            Text(selected.label,
                 style: TextStyle(fontSize: 13, color: Colors.grey[700])),
-          ] else
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                const [
-                  'Select your year level',
-                  'Select a semester',
-                  'Select a subject',
-                ][_level],
-                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-              ),
-            ),
+            const SizedBox(height: 4),
+            Text('$count ${count == 1 ? 'Module' : 'Modules'}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ],
         ],
       ),
     );
   }
 
-  String _prefix(String code) => code.trim().split(' ').first.toUpperCase();
+  // ── Main page: subject categories ─────────────────────────────────────────
 
-  // ── Body: one list per level ──────────────────────────────────────────────
+  Widget _categories(List<_Cluster> clusters, List<_ModEntry> entries) {
+    if (clusters.isEmpty) {
+      return _empty(Icons.folder_open_rounded, 'No subjects available yet.');
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.all(14),
+      itemCount: clusters.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (_, i) {
+        final c = clusters[i];
+        final n = entries.where((e) => e.cluster == c.code.toUpperCase()).length;
+        return _NavCard(
+          icon: c.icon,
+          color: c.color,
+          title: '${c.code} — ${c.label}',
+          subtitle: '$n ${n == 1 ? 'Module' : 'Modules'}',
+          onTap: () => setState(() => _categoryCode = c.code.toUpperCase()),
+        );
+      },
+    );
+  }
 
-  Widget _body(List<Subject> subjects,
-      Map<String, List<Map<String, dynamic>>> byCode, int Function(Subject) count) {
-    // Level 3: modules of the chosen subject.
-    if (_subject != null) {
-      final mods = byCode[_subject!.code.trim().toLowerCase()] ?? [];
-      if (mods.isEmpty) {
-        return _empty(Icons.folder_open_rounded,
-            'No modules for ${_subject!.code} yet.');
+  // ── Category page: modules grouped by Year Level + Semester ──────────────
+
+  Widget _moduleGroups(List<_ModEntry> list) {
+    if (list.isEmpty) {
+      return _empty(Icons.folder_open_rounded,
+          'No modules uploaded for this subject yet.');
+    }
+
+    String groupOf(_ModEntry e) =>
+        '${e.subject.yearLevel} • ${e.subject.semester}';
+    final counts = <String, int>{};
+    for (final e in list) {
+      counts[groupOf(e)] = (counts[groupOf(e)] ?? 0) + 1;
+    }
+
+    final children = <Widget>[];
+    String? current;
+    for (final e in list) {
+      final g = groupOf(e);
+      if (g != current) {
+        current = g;
+        children.add(_groupHeader(g, counts[g]!));
       }
-      return ListView.builder(
-        padding: const EdgeInsets.all(14),
-        itemCount: mods.length,
-        itemBuilder: (_, i) => Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(left: 4, bottom: 4),
-                child: Text('Module ${i + 1}',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey[600])),
+      children.add(Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 2, bottom: 6),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  _pill(Icons.school_rounded, e.subject.yearLevel),
+                  _pill(Icons.calendar_month_rounded, e.subject.semester),
+                  _pill(Icons.bookmark_rounded, e.subject.code),
+                ],
               ),
-              _ModuleCard(data: mods[i], isTeacher: false), // Read Module kept
+            ),
+            _ModuleCard(data: e.data, isTeacher: false), // Read Module kept
+          ],
+        ),
+      ));
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: children,
+    );
+  }
+
+  Widget _groupHeader(String label, int count) => Padding(
+        padding: const EdgeInsets.fromLTRB(2, 6, 2, 10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: _navy.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: _navy.withValues(alpha: 0.25)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.school_rounded, size: 16, color: _navy),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: _navy)),
+              ),
+              Text('$count ${count == 1 ? 'Module' : 'Modules'}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[700])),
             ],
           ),
         ),
       );
-    }
 
-    // Level 2: subjects for the chosen year + semester.
-    if (_sem != null) {
-      final list = subjects
-          .where((s) => s.yearLevel == _year && s.semester == _sem)
-          .toList();
-      if (list.isEmpty) {
-        return _empty(Icons.menu_book_rounded,
-            'No subjects for $_year • $_sem yet.');
-      }
-      return _list([
-        for (final s in list)
-          _NavCard(
-            icon: Icons.menu_book_rounded,
-            color: _colorForCode(_prefix(s.code)),
-            title: '${s.code} — ${s.description}',
-            subtitle: '${count(s)} ${count(s) == 1 ? 'Module' : 'Modules'}',
-            onTap: () => setState(() => _subject = s),
-          ),
-      ]);
-    }
-
-    // Level 1: semesters of the chosen year.
-    if (_year != null) {
-      return _list([
-        for (final sem in CurriculumRepo.semesters)
-          Builder(builder: (_) {
-            final inSem = subjects
-                .where((s) => s.yearLevel == _year && s.semester == sem)
-                .toList();
-            final mods = inSem.fold<int>(0, (n, s) => n + count(s));
-            return _NavCard(
-              icon: Icons.calendar_month_rounded,
-              color: _navy,
-              title: sem,
-              subtitle: '${inSem.length} Subjects • $mods Modules',
-              onTap: () => setState(() => _sem = sem),
-            );
-          }),
-      ]);
-    }
-
-    // Level 0: year levels.
-    return _list([
-      for (final y in CurriculumRepo.yearLevels)
-        Builder(builder: (_) {
-          final inYear = subjects.where((s) => s.yearLevel == y).toList();
-          final mods = inYear.fold<int>(0, (n, s) => n + count(s));
-          return _NavCard(
-            icon: Icons.school_rounded,
-            color: _navy,
-            title: y,
-            tag: widget.studentYear == y ? 'Your year' : null,
-            subtitle: '${inYear.length} Subjects • $mods Modules',
-            onTap: () => setState(() => _year = y),
-          );
-        }),
-    ]);
-  }
-
-  Widget _list(List<Widget> children) => ListView.separated(
-        padding: const EdgeInsets.all(14),
-        itemCount: children.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (_, i) => children[i],
+  Widget _pill(IconData icon, String label) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: _navy.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 11, color: _navy),
+            const SizedBox(width: 4),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _navy)),
+          ],
+        ),
       );
 
   Widget _empty(IconData icon, String msg) => Center(
@@ -1078,7 +1100,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
       );
 }
 
-/// One tappable row used at the Year, Semester and Subject levels.
+/// One tappable row used for the subject categories.
 class _NavCard extends StatelessWidget {
   final IconData icon;
   final Color color;
