@@ -7,10 +7,11 @@ import 'quiz_results_screen.dart';
 /// Everything here is calculated ONLY from the submissions of [quizId]
 /// (e.g. 4 submissions → 4 examinees), never from all quizzes in the system.
 ///
-/// A "Quiz Results | Review Results" switcher sits directly under the app bar.
-/// Tapping "Quiz Results" swaps back (pushReplacement) to the results list of
-/// the SAME quiz, so the two screens behave like two tabs of one report and
-/// the back arrow still returns to wherever the admin came from.
+/// A "Quiz Results | Review Results" switcher sits directly under the app bar
+/// for both admins and instructors. Tapping "Quiz Results" swaps back
+/// (pushReplacement) to the results list of the SAME quiz, so the two screens
+/// behave like two tabs of one report and the back arrow still returns to
+/// wherever the user came from.
 ///
 /// LAYOUT
 /// - Four summary tiles: Total Examinees · Overall Average · Passing Average
@@ -27,8 +28,8 @@ class ReviewResultsScreen extends StatelessWidget {
   final String quizId;
   final String quizTitle;
 
-  /// Passed back to QuizResultsScreen when switching, so the switcher keeps
-  /// showing there.
+  /// Passed back to QuizResultsScreen when switching, so the user's real
+  /// role is preserved across the swap.
   final bool isAdmin;
 
   const ReviewResultsScreen({
@@ -74,7 +75,7 @@ class ReviewResultsScreen extends StatelessWidget {
         pageBuilder: (_, __, ___) => QuizResultsScreen(
           quizId: quizId,
           quizTitle: quizTitle,
-          isAdmin: true,
+          isAdmin: isAdmin,
         ),
         transitionsBuilder: (_, anim, __, child) =>
             FadeTransition(opacity: anim, child: child),

@@ -4,11 +4,11 @@ import 'review_results_screen.dart';
 
 /// QuizResultsScreen — results for ONE specific quiz.
 ///
-/// Admins see a "Quiz Results | Review Results" switcher directly under the
-/// app bar. Tapping "Review Results" swaps this screen for the examination
-/// statistics of the SAME quiz (same quizId → same examinees). The swap uses
-/// pushReplacement, so the back arrow still returns to wherever the admin
-/// came from (no stack of alternating screens).
+/// Admins AND instructors see a "Quiz Results | Review Results" switcher
+/// directly under the app bar. Tapping "Review Results" swaps this screen
+/// for the examination statistics of the SAME quiz (same quizId → same
+/// examinees). The swap uses pushReplacement, so the back arrow still
+/// returns to wherever the user came from (no stack of alternating screens).
 ///
 /// LAYOUT
 /// - A compact row of four stat tiles (Submissions, Average, Highest, Lowest).
@@ -22,7 +22,8 @@ class QuizResultsScreen extends StatefulWidget {
   final String quizId;
   final String quizTitle;
 
-  /// Admin accounts get the Quiz Results / Review Results switcher.
+  /// Kept so the role can still be passed along when switching screens.
+  /// The Quiz Results / Review Results switcher is shown regardless of it.
   final bool isAdmin;
 
   const QuizResultsScreen({
@@ -156,14 +157,13 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                 overflow: TextOverflow.ellipsis),
           ],
         ),
-        // Admin only: always-visible switcher to the Review Results report.
-        bottom: widget.isAdmin
-            ? _ViewSwitcher(
-                quizActive: true,
-                onQuizTap: () {},
-                onReviewTap: _openReviewResults,
-              )
-            : null,
+        // Shown to everyone (admins and instructors): always-visible
+        // switcher to the Review Results report.
+        bottom: _ViewSwitcher(
+          quizActive: true,
+          onQuizTap: () {},
+          onReviewTap: _openReviewResults,
+        ),
       ),
       // Outer stream: the quiz doc (subject + required passing %).
       body: StreamBuilder<DocumentSnapshot>(
