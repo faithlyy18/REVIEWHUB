@@ -13,6 +13,9 @@ import 'curriculum_repo.dart';
 // Manage Curriculum, and leaves out archived subjects. So a new subject shows
 // up under its year level and semester automatically, and an archived one
 // disappears, with no app update needed.
+//
+// Every subject row in the Subjects tab is tappable: it opens
+// StudentSubjectModulesScreen (modules_screen.dart) for that subject code.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -578,6 +581,8 @@ class _QuizzesTab extends StatelessWidget {
 // plus any subjects an admin added in Manage Curriculum, minus archived ones.
 // It updates in real time: add a subject and it appears under its year and
 // semester; archive it and it disappears.
+//
+// Tapping a subject opens its module page (StudentSubjectModulesScreen).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SubjectsTab extends StatefulWidget {
@@ -801,9 +806,11 @@ class _SemesterSection extends StatelessWidget {
   }
 }
 
-// Plain, non-interactive display row — the curriculum tab is view-only, so
-// this deliberately has no InkWell/onTap and no trailing chevron (a chevron
-// would visually imply the row is tappable).
+// Tappable subject row. Layout is unchanged from the old display-only row;
+// the only addition is the InkWell, which opens that subject's module page
+// (StudentSubjectModulesScreen, defined in modules_screen.dart). The page
+// matches modules by the subject code, shows the existing Year/Semester info
+// and Read Module cards, or "This subject has no module yet." when empty.
 class _SubjectTile extends StatelessWidget {
   final Subject subject;
   final Color color;
@@ -815,33 +822,43 @@ class _SubjectTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-      child: Row(
-        children: [
-          Container(
-            width: 76,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: color.withOpacity(0.3)),
+    return InkWell(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => StudentSubjectModulesScreen(subject: subject),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        child: Row(
+          children: [
+            Container(
+              width: 76,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: color.withOpacity(0.3)),
+              ),
+              child: Text(subject.code,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: color)),
             ),
-            child: Text(subject.code,
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: color)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(subject.description,
-                style: const TextStyle(fontSize: 13, color: Colors.black87)),
-          ),
-        ],
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(subject.description,
+                  style: const TextStyle(
+                      fontSize: 13, color: Colors.black87)),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1189,6 +1189,233 @@ class _NavCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// StudentSubjectModulesScreen
+//
+// Opened when a student taps a subject in the Subjects (curriculum) tab.
+// Matches modules by the curriculum subject code (module.subject == code),
+// so "CDI 1" only ever shows CDI 1 modules.
+//   • Has modules  -> Year/Semester header + pills + the usual module cards
+//                     (Read Module and the confirmation dialog unchanged).
+//   • No modules   -> "This subject has no module yet."
+//   • Back button  -> returns to the Subjects tab.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class StudentSubjectModulesScreen extends StatefulWidget {
+  final Subject subject;
+  const StudentSubjectModulesScreen({super.key, required this.subject});
+
+  @override
+  State<StudentSubjectModulesScreen> createState() =>
+      _StudentSubjectModulesScreenState();
+}
+
+class _StudentSubjectModulesScreenState
+    extends State<StudentSubjectModulesScreen> {
+  static const _navy = Color(0xFF1A237E);
+
+  late final Stream<QuerySnapshot> _stream = FirebaseFirestore.instance
+      .collection('modules')
+      .where('archived', isEqualTo: false)
+      .snapshots();
+
+  /// Modules of this subject only: placeholder titles removed, duplicates
+  /// merged, ordered by the first number in the title, then A–Z.
+  List<Map<String, dynamic>> _mine(List<QueryDocumentSnapshot> docs) {
+    final code = widget.subject.code.trim().toLowerCase();
+    final seen = <String>{};
+    final out = <Map<String, dynamic>>[];
+    for (final d in docs) {
+      final m = d.data() as Map<String, dynamic>;
+      if ((m['subject'] as String? ?? '').trim().toLowerCase() != code) {
+        continue;
+      }
+      final title = (m['title'] as String? ?? '').trim();
+      if (_StudentModulesScreenState._invalidTitle(title)) continue;
+      final key = title.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+      if (!seen.add(key)) continue;
+      out.add(m);
+    }
+    out.sort((a, b) {
+      final ta = (a['title'] as String? ?? '').trim();
+      final tb = (b['title'] as String? ?? '').trim();
+      final n = _StudentModulesScreenState._numIn(ta)
+          .compareTo(_StudentModulesScreenState._numIn(tb));
+      return n != 0 ? n : ta.toLowerCase().compareTo(tb.toLowerCase());
+    });
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.subject;
+    final color = _colorForCode(s.code.trim().split(' ').first.toUpperCase());
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF283593),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 680),
+            child: Container(
+              margin: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  // Header with Back button
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                          label: const Text('Back'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: _navy,
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            minimumSize: const Size(0, 32),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(s.code,
+                            style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: color)),
+                        Text(s.description,
+                            style: TextStyle(
+                                fontSize: 13, color: Colors.grey[700])),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot>(
+                      stream: _stream,
+                      builder: (context, snap) {
+                        if (!snap.hasData) {
+                          return const Center(
+                              child: CircularProgressIndicator(color: _navy));
+                        }
+                        final mods = _mine(snap.data!.docs);
+                        if (mods.isEmpty) return _noModules();
+                        return _list(mods);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _noModules() => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.folder_off_rounded, size: 64, color: Colors.grey[300]),
+              const SizedBox(height: 12),
+              Text('This subject has no module yet.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[600], fontSize: 15)),
+            ],
+          ),
+        ),
+      );
+
+  Widget _list(List<Map<String, dynamic>> mods) {
+    final s = widget.subject;
+    final n = mods.length;
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        // Year Level • Semester group header (same look as the category page)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 6, 2, 10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: _navy.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _navy.withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.school_rounded, size: 16, color: _navy),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('${s.yearLevel} • ${s.semester}',
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: _navy)),
+                ),
+                Text('$n ${n == 1 ? 'Module' : 'Modules'}',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+              ],
+            ),
+          ),
+        ),
+        for (final m in mods)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(left: 2, bottom: 6),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      _pill(Icons.school_rounded, s.yearLevel),
+                      _pill(Icons.calendar_month_rounded, s.semester),
+                      _pill(Icons.bookmark_rounded, s.code),
+                    ],
+                  ),
+                ),
+                _ModuleCard(data: m, isTeacher: false), // Read Module kept
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _pill(IconData icon, String label) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: _navy.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 11, color: _navy),
+            const SizedBox(width: 4),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _navy)),
+          ],
+        ),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shared Module Card
 //
 // Shows the module's subject group (e.g. CDI) and, when set, its curriculum
@@ -1214,6 +1441,19 @@ class _ModuleCard extends StatefulWidget {
 
 class _ModuleCardState extends State<_ModuleCard> {
   String? _teacherName;
+
+  /// A module is "NEW" for 30 days after it was uploaded. The badge hides
+  /// itself automatically once that time has passed.
+  /// A null `uploadedAt` that is present on the document means the upload is
+  /// still being written to the server, so it counts as brand new.
+  bool get _isNew {
+    if (!widget.data.containsKey('uploadedAt')) return false;
+    final raw = widget.data['uploadedAt'];
+    if (raw == null) return true;
+    if (raw is! Timestamp) return false;
+    final age = DateTime.now().difference(raw.toDate());
+    return age < const Duration(days: 30);
+  }
 
   @override
   void initState() {
@@ -1444,12 +1684,36 @@ class _ModuleCardState extends State<_ModuleCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                            color: Color(0xFF1A237E),
-                          )),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Flexible(
+                            child: Text(title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                  color: Color(0xFF1A237E),
+                                )),
+                          ),
+                          if (_isNew) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              margin: const EdgeInsets.only(top: 2),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE53935),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text('NEW',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white)),
+                            ),
+                          ],
+                        ],
+                      ),
                       const SizedBox(height: 6),
                       if (hasCluster)
                         Wrap(
