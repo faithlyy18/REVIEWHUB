@@ -19,6 +19,11 @@ import 'manage_curriculum_screen.dart';
 // stripped back out before the text is shown anywhere.
 const String _kBoldMarker = '\u0007';
 
+// Default passing score (%) pre-filled for new reviews. Older reviews that
+// were saved before this setting existed also fall back to 75 in the
+// results screens.
+const double _kDefaultPassingPercent = 75;
+
 // NOTE: the curriculum (year levels → semesters → subjects) is not hardcoded
 // here. Subjects come live from Firestore through CurriculumRepo, and the
 // subject picker sheet lives in manage_curriculum_screen.dart
@@ -1271,6 +1276,15 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   final _titleController = TextEditingController();
   final _timeLimitController = TextEditingController();
 
+  // Instructor-set passing score, in percent. Pre-filled with 75 for new
+  // reviews; saved to Firestore as `passingPercent` and used by the Quiz
+  // Results and Review Results screens to decide Passed / Failed.
+  final _passingScoreController =
+      TextEditingController(text: _formatPercent(_kDefaultPassingPercent));
+
+  // Quick-pick values shown as chips under the Passing Score field.
+  static const List<int> _passingPresets = [50, 60, 75, 85, 90];
+
   String _selectedYearLevel = '';
   String _selectedSemester = '';
   String _selectedSubject = '';
@@ -1303,6 +1317,13 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         _timeLimitController.text = _formatTimeLimit(savedMins);
       }
 
+      // Reviews saved before this setting existed have no passingPercent;
+      // they keep showing the 75% default until the instructor changes it.
+      final savedPassing = (q['passingPercent'] as num?)?.toDouble();
+      if (savedPassing != null) {
+        _passingScoreController.text = _formatPercent(savedPassing);
+      }
+
       // Defaults to true so quizzes created before this feature existed
       // keep showing correct answers as before.
       _showCorrectAnswers = q['showCorrectAnswer'] as bool? ?? true;
@@ -1331,6 +1352,7 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   void dispose() {
     _titleController.dispose();
     _timeLimitController.dispose();
+    _passingScoreController.dispose();
     for (final q in _questions) {
       q.dispose();
     }
@@ -1362,6 +1384,20 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // 120 -> "2:00", 90 -> "1:30", 45 -> "0:45"
   String _formatTimeLimit(int totalMinutes) =>
       '${totalMinutes ~/ 60}:${(totalMinutes % 60).toString().padLeft(2, '0')}';
+
+  // "75" -> 75.0, "87.5" -> 87.5. Returns null when it isn't a number
+  // greater than 0 and at most 100 (up to 2 decimal places).
+  double? _parsePassingScore(String input) {
+    final t = input.trim();
+    if (!RegExp(r'^\d{1,3}(\.\d{1,2})?$').hasMatch(t)) return null;
+    final v = double.tryParse(t);
+    if (v == null || v <= 0 || v > 100) return null;
+    return v;
+  }
+
+  // 75.0 -> "75", 87.5 -> "87.5"
+  static String _formatPercent(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 
   // ── Selection handlers ─────────────────────────────────────────────────────
 
@@ -1491,6 +1527,13 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
       return;
     }
 
+    // Instructor-set passing score (%), e.g. 50, 75, 87.5.
+    final passingPercent = _parsePassingScore(_passingScoreController.text);
+    if (passingPercent == null) {
+      _snack('Please enter a valid passing score between 1 and 100.', error: true);
+      return;
+    }
+
     if (_questions.isEmpty) { _snack('Add at least one question.', error: true); return; }
     if (!_validateQuestions()) return;
 
@@ -1503,6 +1546,10 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
         'subject': _selectedSubject,
         'subjectCode': _selectedSubjectCode,
         'timeLimitMinutes': timeLimitMinutes,
+        // Required score (%) to pass this review. Read by Quiz Results and
+        // Review Results to mark each student Passed / Failed and to
+        // compute the pass and fail rates.
+        'passingPercent': passingPercent,
         // Saved so TakeQuizScreen knows whether to reveal correct
         // answers on the student's Review Result screen.
         'showCorrectAnswer': _showCorrectAnswers,
@@ -1644,6 +1691,72 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
                       }
                       return null;
                     },
+                  ),
+                ),
+
+                // ── Passing Score (%) — set by the instructor ──────────
+                const SizedBox(height: 14),
+                _LabeledField(
+                  label: 'Passing Score (%)',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextFormField(
+                        controller: _passingScoreController,
+                        keyboardType:
+                            const TextInputType.numberWithOptions(decimal: true),
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                          LengthLimitingTextInputFormatter(6),
+                        ],
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1A237E)),
+                        decoration: _inputDeco('e.g. 50, 75 or 87.5', Icons.flag_outlined).copyWith(
+                          suffixText: '%',
+                          suffixStyle: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontWeight: FontWeight.w600),
+                          helperText:
+                              'Students who score at or above this percentage pass',
+                          helperMaxLines: 2,
+                        ),
+                        onChanged: (_) => setState(() {}),
+                        validator: (v) {
+                          if (v == null || v.trim().isEmpty) return 'Required';
+                          if (_parsePassingScore(v) == null) {
+                            return 'Enter a number from 1 to 100';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          for (final p in _passingPresets)
+                            Builder(builder: (_) {
+                              final current =
+                                  _parsePassingScore(_passingScoreController.text);
+                              final selected = current != null && current == p.toDouble();
+                              return ChoiceChip(
+                                label: Text('$p%'),
+                                selected: selected,
+                                labelStyle: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: selected ? Colors.white : const Color(0xFF1A237E),
+                                ),
+                                selectedColor: const Color(0xFF1A237E),
+                                backgroundColor: const Color(0xFFE8EAF6),
+                                showCheckmark: false,
+                                side: BorderSide.none,
+                                visualDensity: VisualDensity.compact,
+                                onSelected: (_) => setState(() {
+                                  _passingScoreController.text = p.toString();
+                                }),
+                              );
+                            }),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
 

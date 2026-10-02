@@ -67,6 +67,10 @@ class ReviewResultsScreen extends StatelessWidget {
     return '$h12:$mm $ampm';
   }
 
+  /// 75 -> "75%", 87.5 -> "87.5%"
+  static String _fmtPassing(double v) =>
+      v == v.roundToDouble() ? '${v.toInt()}%' : '${v.toStringAsFixed(1)}%';
+
   /// Swap to the Quiz Results list for THIS quiz.
   void _openQuizResults(BuildContext context) {
     Navigator.pushReplacement(
@@ -211,6 +215,30 @@ class ReviewResultsScreen extends StatelessWidget {
                     valueColor: _red),
               ];
 
+              // Second row: the instructor-set passing score and the
+              // resulting pass / fail rates.
+              final passRate = passers.length / rows.length * 100;
+              final failRate = nonPassers.length / rows.length * 100;
+              final rateTiles = <Widget>[
+                _StatTile(
+                    icon: Icons.flag_outlined,
+                    label: 'Passing Score',
+                    value: _fmtPassing(passingPercent),
+                    caption: 'set by instructor'),
+                _StatTile(
+                    icon: Icons.check_circle_outline_rounded,
+                    label: 'Pass Rate',
+                    value: '${passRate.toStringAsFixed(1)}%',
+                    valueColor: _green,
+                    caption: '${passers.length} of ${rows.length} passed'),
+                _StatTile(
+                    icon: Icons.cancel_outlined,
+                    label: 'Fail Rate',
+                    value: '${failRate.toStringAsFixed(1)}%',
+                    valueColor: _red,
+                    caption: '${nonPassers.length} of ${rows.length} failed'),
+              ];
+
               return LayoutBuilder(builder: (context, constraints) {
                 final contentWidth = constraints.maxWidth > _maxWidth
                     ? _maxWidth
@@ -247,6 +275,13 @@ class ReviewResultsScreen extends StatelessWidget {
                                   Expanded(child: tiles[i]),
                                 ],
                               ]),
+                            const SizedBox(height: 8),
+                            Row(children: [
+                              for (int i = 0; i < rateTiles.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 8),
+                                Expanded(child: rateTiles[i]),
+                              ],
+                            ]),
                             const SizedBox(height: 12),
                             _buildResultsCard(
                                 rows: rows,
@@ -581,11 +616,15 @@ class _StatTile extends StatelessWidget {
   final String value;
   final Color valueColor;
 
+  /// Optional small line under the value (e.g. "3 of 4 passed").
+  final String? caption;
+
   const _StatTile({
     required this.icon,
     required this.label,
     required this.value,
     this.valueColor = const Color(0xFF1A237E),
+    this.caption,
   });
 
   @override
@@ -611,9 +650,20 @@ class _StatTile extends StatelessWidget {
             ),
           ]),
           const SizedBox(height: 3),
-          Text(value,
-              style: TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.bold, color: valueColor)),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(value,
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: valueColor)),
+          ),
+          if (caption != null)
+            Text(caption!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
         ],
       ),
     );
