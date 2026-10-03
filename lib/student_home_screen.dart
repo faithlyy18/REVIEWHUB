@@ -19,6 +19,30 @@ import 'curriculum_repo.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// "NEW" badge for recently posted reviews
+//
+// A review is NEW for exactly 14 days after it was posted. This is based ONLY
+// on the quiz's own `createdAt` (set once when the review is created and never
+// changed by edits, which only write `updatedAt`) — never on whether the
+// student has opened the review. Once 14 days have passed the badge simply
+// stops showing; nobody has to edit the review.
+//
+//   • `createdAt` present but still null  -> the save is still being written
+//     to the server, so it counts as brand new.
+//   • `createdAt` missing                 -> older review, no badge.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const Duration kNewReviewDuration = Duration(days: 14);
+
+bool _isReviewNew(Map<String, dynamic> quiz) {
+  if (!quiz.containsKey('createdAt')) return false;
+  final raw = quiz['createdAt'];
+  if (raw == null) return true;
+  if (raw is! Timestamp) return false;
+  return DateTime.now().difference(raw.toDate()) < kNewReviewDuration;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Background painter — same floating text as login & teacher screens
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -563,6 +587,8 @@ class _QuizzesTab extends StatelessWidget {
                           studentUid: studentUid,
                           studentName: studentName,
                           studentYearLevel: studentYearLevel,
+                          // NEW badge: 14 days from when it was posted.
+                          isNew: _isReviewNew(quiz),
                         );
                       },
                     );
@@ -991,6 +1017,10 @@ class _QuizCard extends StatefulWidget {
   final String studentName;
   final String studentYearLevel;
 
+  /// True while the review is within 14 days of being posted. Shows the red
+  /// "NEW" badge beside the title; purely visual, changes nothing else.
+  final bool isNew;
+
   const _QuizCard({
     required this.quizId,
     required this.title,
@@ -1002,6 +1032,7 @@ class _QuizCard extends StatefulWidget {
     required this.studentUid,
     required this.studentName,
     required this.studentYearLevel,
+    this.isNew = false,
   });
 
   @override
@@ -1303,13 +1334,39 @@ class _QuizCardState extends State<_QuizCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        widget.title,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                          color: Color(0xFF1A237E),
-                        ),
+                      // Title + NEW badge (badge only while within 14 days
+                      // of the review being posted).
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              widget.title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: Color(0xFF1A237E),
+                              ),
+                            ),
+                          ),
+                          if (widget.isNew) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              margin: const EdgeInsets.only(top: 1),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE53935),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text('NEW',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white)),
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 5),
                       Wrap(
