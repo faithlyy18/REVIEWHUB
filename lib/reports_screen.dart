@@ -7,12 +7,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 ///   • quiz_results  → every submission a student completes (written by
 ///                     TakeQuizScreen: studentName, quizId, quizTitle,
 ///                     score, totalQuestions, submittedAt, ...)
-///   • quizzes       → subject + optional `passingPercent` per review.
+///   • quizzes       → subject + optional `passingPercent` per review, and
+///                     the uploader (`createdBy` uid / `createdByName`).
 ///                     A result is ONLY counted if its review still exists,
 ///                     so Reports always matches the instructor
 ///                     Quiz Results screens (no orphaned/old results).
 ///   • users         → fallback for a student's full name and year level
-///                     if a result doesn't have them saved.
+///                     if a result doesn't have them saved, and the live
+///                     name of the instructor who uploaded a review.
 ///
 /// New submissions appear automatically (snapshots), no refresh needed.
 ///
@@ -22,6 +24,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 ///
 /// Pass mark: each quiz's `passingPercent` if set, otherwise
 /// [kDefaultPassingPercent] below (75, same as the other result screens).
+///
+/// "Uploaded By": always taken from the REVIEW document (the quiz the
+/// result belongs to), never from the student's attempt, so it is the
+/// instructor who uploaded that specific review.
 ///
 /// Opened from the drawer as: ReportsScreen(standalone: true)
 const double kDefaultPassingPercent = 75;
@@ -45,7 +51,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const _border = Color(0xFFE8EAF6);
   static const _muted = Color(0xFF9096B4);
   static const double _maxWidth = 1100;
-  static const double _tableBreakpoint = 760;
+  // Raised from 760 because the table now has 7 columns instead of 6.
+  // Below this width the report switches to the compact card list.
+  static const double _tableBreakpoint = 860;
 
   late final Stream<QuerySnapshot> _resultsStream;
   late final Stream<QuerySnapshot> _quizzesStream;
@@ -128,7 +136,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 };
 
                 // uid -> full name / year level (fallbacks only; the users
-                // read may be denied or still loading, which is fine)
+                // read may be denied or still loading, which is fine).
+                // Also used to turn a review's `createdBy` uid into the
+                // instructor's current name.
                 final names = <String, String>{};
                 final years = <String, String>{};
                 for (final d in userSnap.data?.docs ?? const []) {
@@ -167,7 +177,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   if (q.isNotEmpty &&
                       !r.name.toLowerCase().contains(q) &&
                       !r.quizTitle.toLowerCase().contains(q) &&
-                      !r.subject.toLowerCase().contains(q)) {
+                      !r.subject.toLowerCase().contains(q) &&
+                      !r.uploadedBy.toLowerCase().contains(q)) {
                     return false;
                   }
                   return true;
@@ -265,6 +276,19 @@ class _ReportsScreenState extends State<ReportsScreen> {
           ? titleFromResult
           : (quizTitle.isNotEmpty ? quizTitle : 'Untitled Review');
 
+      // Uploader comes ONLY from the review document (`quiz`), never from
+      // the student's result. Order of preference:
+      //   1. the uploader's current name from `users` (via createdBy uid)
+      //   2. the name saved on the review (`createdByName`)
+      //   3. 'Unknown' (older reviews with neither)
+      final creatorUid = ((quiz['createdBy'] as String?) ?? '').trim();
+      final savedCreatorName =
+          ((quiz['createdByName'] as String?) ?? '').trim();
+      var uploadedBy = '';
+      if (creatorUid.isNotEmpty) uploadedBy = names[creatorUid] ?? '';
+      if (uploadedBy.isEmpty) uploadedBy = savedCreatorName;
+      if (uploadedBy.isEmpty) uploadedBy = 'Unknown';
+
       rows.add(_Rep(
         studentKey: uid.isNotEmpty ? uid : name.toLowerCase(),
         name: name,
@@ -272,6 +296,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         quizId: quizId,
         quizTitle: title,
         subject: subject,
+        uploadedBy: uploadedBy,
         score: score,
         total: total,
         percent: percent,
@@ -514,7 +539,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         onChanged: (v) => setState(() => _search = v),
         style: const TextStyle(fontSize: 13),
         decoration: InputDecoration(
-          hintText: 'Search student, review or subject',
+          hintText: 'Search student, review, subject or instructor',
           hintStyle: const TextStyle(fontSize: 12.5),
           prefixIcon: const Icon(Icons.search_rounded, size: 18),
           filled: true,
@@ -643,6 +668,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         for (final h in const [
           'Student',
           'Review / Subject',
+          'Uploaded By',
           'Score',
           'Percentage',
           'Date taken',
@@ -691,6 +717,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       style: const TextStyle(fontSize: 11.5, color: _muted)),
               ],
             )),
+            cell(Text(rows[i].uploadedBy,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    color: rows[i].uploadedBy == 'Unknown'
+                        ? _muted
+                        : const Color(0xFF2C2C2A)))),
             cell(Text('${rows[i].score}/${rows[i].total}',
                 style: TextStyle(
                     fontWeight: FontWeight.bold,
@@ -719,12 +754,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return Table(
       defaultVerticalAlignment: TableCellVerticalAlignment.middle,
       columnWidths: const {
-        0: FlexColumnWidth(2.0),
-        1: FlexColumnWidth(2.8),
-        2: FlexColumnWidth(1.1),
-        3: FlexColumnWidth(1.2),
-        4: FlexColumnWidth(1.6),
-        5: FlexColumnWidth(1.2),
+        0: FlexColumnWidth(1.9),
+        1: FlexColumnWidth(2.6),
+        2: FlexColumnWidth(1.8),
+        3: FlexColumnWidth(1.0),
+        4: FlexColumnWidth(1.1),
+        5: FlexColumnWidth(1.5),
+        6: FlexColumnWidth(1.1),
       },
       children: [header, ...body],
     );
@@ -754,6 +790,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           ? '${rows[i].quizTitle} — ${rows[i].subject}'
                           : rows[i].quizTitle,
                       maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, color: _muted)),
+                  Text('Uploaded by ${rows[i].uploadedBy}',
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 11.5, color: _muted)),
                   Text(
@@ -840,6 +880,7 @@ class _Rep {
   final String quizId;
   final String quizTitle;
   final String subject;
+  final String uploadedBy;
   final int score;
   final int total;
   final double percent;
@@ -853,6 +894,7 @@ class _Rep {
     required this.quizId,
     required this.quizTitle,
     required this.subject,
+    required this.uploadedBy,
     required this.score,
     required this.total,
     required this.percent,
