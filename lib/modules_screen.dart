@@ -493,10 +493,10 @@ Future<void> permanentlyDeleteSubject(
     context: context,
     builder: (ctx) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: const Text('Delete Permanently',
+      title: const Text('Permanently Delete Subject',
           style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
       content: Text(
-          'This will permanently delete "${cluster.label}" (${cluster.code}) and all of its archived modules. This cannot be undone.'),
+          'This action will permanently remove "${cluster.label}" (${cluster.code}) and all of its archived modules. This action cannot be undone.'),
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -509,7 +509,7 @@ Future<void> permanentlyDeleteSubject(
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8))),
           onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Delete Forever'),
+          child: const Text('Permanently Delete'),
         ),
       ],
     ),
