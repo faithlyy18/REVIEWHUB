@@ -42,6 +42,10 @@ import 'curriculum_repo.dart';
 // STUDENT SIDE: StudentModulesScreen now navigates
 //   Year Level -> Semester -> Subject -> Modules -> Read Module
 //
+// ALL subjects (including the 7 starters: CRIM, CLJ, CDI, FORENSIC, LEA, CA,
+// ENG) can be edited and archived. Archived subjects stay in the Archived tab
+// and are only deleted permanently when an admin chooses "Delete" there.
+//
 // ARCHIVE MODEL: module subjects are never hard-deleted from the active list.
 // Archiving sets `archived: true` and cascade-archives every active module
 // under it.
@@ -59,10 +63,6 @@ class _Cluster {
   final bool isArchived;
   final DateTime? archivedAt;
 
-  /// True for the built-in default module subjects. These are protected:
-  /// they can never be archived or deleted.
-  final bool isDefault;
-
   const _Cluster({
     required this.id,
     required this.code,
@@ -72,7 +72,6 @@ class _Cluster {
     this.createdAt,
     this.isArchived = false,
     this.archivedAt,
-    this.isDefault = false,
   });
 }
 
@@ -205,11 +204,14 @@ Widget _fileTypeBadge(Map<String, dynamic> data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEFAULT MODULE SUBJECTS (protected)
+// STARTER MODULE SUBJECTS (fully editable)
 //
-// The 7 original subject clusters. They are built into the app, so they are
-// ALWAYS available in the module subject picker, never depend on Firestore,
-// and can never be archived or deleted.
+// The 7 starting subject clusters. They are only a STARTING LIST: the first
+// time the app runs, they are copied into Firestore (`moduleSubjects`) once
+// (see _seedDefaultModuleSubjects). After that they are ordinary subjects —
+// they can be edited (code / name), archived, restored, and permanently
+// deleted by an admin, exactly like subjects added manually. They are never
+// re-created once the seed marker exists.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const List<List<String>> _kDefaultModuleSubjects = [
@@ -225,15 +227,23 @@ const List<List<String>> _kDefaultModuleSubjects = [
 bool _isDefaultCode(String code) => _kDefaultModuleSubjects
     .any((d) => d[0].toUpperCase() == code.trim().toUpperCase());
 
+/// Fixed creation time for the starter subject at [i], so they always sort
+/// before subjects added later and keep their original order.
+DateTime _seedTime(int i) => DateTime(2020, 1, 1).add(Duration(seconds: i));
+
+/// Marker document stored in `moduleSubjects` once the starter subjects have
+/// been copied to Firestore. It is not a subject and is always skipped.
+const String _kSeedDocId = '_seeded_v1';
+
 final List<_Cluster> _defaultClusters = [
-  for (final d in _kDefaultModuleSubjects)
+  for (var i = 0; i < _kDefaultModuleSubjects.length; i++)
     _Cluster(
-      id: 'default_${d[0]}',
-      code: d[0],
-      label: d[1],
-      color: _colorForCode(d[0]),
-      icon: _iconForCode(d[0]),
-      isDefault: true,
+      id: 'default_${_kDefaultModuleSubjects[i][0]}',
+      code: _kDefaultModuleSubjects[i][0],
+      label: _kDefaultModuleSubjects[i][1],
+      color: _colorForCode(_kDefaultModuleSubjects[i][0]),
+      icon: _iconForCode(_kDefaultModuleSubjects[i][0]),
+      createdAt: _seedTime(i),
     ),
 ];
 
@@ -263,20 +273,72 @@ Stream<List<_Cluster>> _subjectsStream() {
       .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    // Subjects added later (a stored doc that reuses a default code is ignored).
-    final added = snap.docs
-        .map(_clusterFromDoc)
-        .where((c) => !c.isArchived && !_isDefaultCode(c.code))
-        .toList();
-    added.sort((a, b) {
+    final stored = _storedClusters(snap);
+    final seeded = snap.docs.any((d) => d.id == _kSeedDocId);
+    final list = stored.where((c) => !c.isArchived).toList();
+
+    // Until the starter subjects have been copied to Firestore (by a
+    // teacher/admin screen), show them from the built-in list so students
+    // never see an empty page. Once seeded, Firestore is the only source.
+    if (!seeded) {
+      final have = stored.map((c) => c.code.trim().toUpperCase()).toSet();
+      list.addAll(_defaultClusters
+          .where((c) => !have.contains(c.code.trim().toUpperCase())));
+    }
+
+    list.sort((a, b) {
       if (a.createdAt == null && b.createdAt == null) return 0;
       if (a.createdAt == null) return 1;
       if (b.createdAt == null) return -1;
       return a.createdAt!.compareTo(b.createdAt!);
     });
-    // The 7 defaults always come first and are always present.
-    return [..._defaultClusters, ...added];
+    return list;
   });
+}
+
+/// Every stored module subject (the seed marker and blank docs are skipped).
+List<_Cluster> _storedClusters(QuerySnapshot<Map<String, dynamic>> snap) =>
+    snap.docs
+        .where((d) => d.id != _kSeedDocId)
+        .map(_clusterFromDoc)
+        .where((c) => c.code.trim().isNotEmpty)
+        .toList();
+
+/// Copies the 7 starter subjects into Firestore ONCE so they become normal,
+/// editable and archivable subjects. A marker document records that this has
+/// happened, so a subject that is later archived, edited or deleted is never
+/// brought back. Safe to call repeatedly; failures are ignored.
+Future<void> _seedDefaultModuleSubjects() async {
+  try {
+    final fs = FirebaseFirestore.instance;
+    final col = fs.collection(_kModuleSubjectsCol);
+
+    final marker = await col.doc(_kSeedDocId).get();
+    if (marker.exists) return;
+
+    final existing = await col.get();
+    final have = existing.docs
+        .map((d) => ((d.data()['code'] as String?) ?? '').trim().toUpperCase())
+        .toSet();
+
+    final batch = fs.batch();
+    for (var i = 0; i < _kDefaultModuleSubjects.length; i++) {
+      final code = _kDefaultModuleSubjects[i][0];
+      if (have.contains(code.toUpperCase())) continue;
+      batch.set(col.doc('default_$code'), {
+        'code': code,
+        'label': _kDefaultModuleSubjects[i][1],
+        'createdAt': Timestamp.fromDate(_seedTime(i)),
+        'archived': false,
+      });
+    }
+    batch.set(col.doc(_kSeedDocId), {
+      'seededAt': FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+  } catch (_) {
+    // Non-fatal: the built-in fallback keeps the subjects visible.
+  }
 }
 
 /// Live stream of every ARCHIVED module subject, newest archived first.
@@ -285,10 +347,7 @@ Stream<List<_Cluster>> _archivedSubjectsStream() {
       .collection(_kModuleSubjectsCol)
       .snapshots()
       .map((snap) {
-    final clusters = snap.docs
-        .map(_clusterFromDoc)
-        .where((c) => c.isArchived && !_isDefaultCode(c.code))
-        .toList();
+    final clusters = _storedClusters(snap).where((c) => c.isArchived).toList();
     clusters.sort((a, b) {
       if (a.archivedAt == null && b.archivedAt == null) return 0;
       if (a.archivedAt == null) return 1;
@@ -317,11 +376,6 @@ void showAddSubjectSheet(BuildContext context) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
-  if (cluster.isDefault) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Default subjects cannot be archived or deleted.')));
-    return;
-  }
   final confirm = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -365,10 +419,15 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
         'archivedAt': FieldValue.serverTimestamp(),
       });
     }
-    batch.update(firestore.collection(_kModuleSubjectsCol).doc(cluster.id), {
-      'archived': true,
-      'archivedAt': FieldValue.serverTimestamp(),
-    });
+    batch.set(
+        firestore.collection(_kModuleSubjectsCol).doc(cluster.id),
+        {
+          'code': cluster.code,
+          'label': cluster.label,
+          'archived': true,
+          'archivedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true));
     await batch.commit();
 
     if (context.mounted) {
@@ -485,6 +544,216 @@ Future<void> permanentlyDeleteSubject(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Edit a module subject (code and/or name).
+//
+// Modules point to their subject through `cluster` (the code) and
+// `clusterLabel` (the name), so when either changes, every module under this
+// subject (active AND archived) is updated in the same operation. Nothing is
+// orphaned and no module is lost.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Future<void> editSubject(BuildContext context, _Cluster cluster) async {
+  final res = await showDialog<List<String>>(
+    context: context,
+    builder: (_) => _EditSubjectDialog(cluster: cluster),
+  );
+  if (res == null) return;
+
+  final newCode = res[0];
+  final newLabel = res[1];
+  if (newCode == cluster.code && newLabel == cluster.label) return;
+
+  void snack(String msg) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
+  try {
+    final fs = FirebaseFirestore.instance;
+    final col = fs.collection(_kModuleSubjectsCol);
+
+    // The new code must not already belong to another subject
+    // (active or archived).
+    if (newCode.toUpperCase() != cluster.code.trim().toUpperCase()) {
+      final dup = await col.where('code', isEqualTo: newCode).get();
+      final taken =
+          dup.docs.any((d) => d.id != cluster.id && d.id != _kSeedDocId);
+      if (taken) {
+        snack('A subject with code "$newCode" already exists '
+            '(check the Archived tab too).');
+        return;
+      }
+    }
+
+    final modulesSnap = await fs
+        .collection('modules')
+        .where('cluster', isEqualTo: cluster.code)
+        .get();
+
+    var batch = fs.batch();
+    var n = 0;
+    batch.set(
+        col.doc(cluster.id),
+        {'code': newCode, 'label': newLabel},
+        SetOptions(merge: true));
+    n++;
+    for (final doc in modulesSnap.docs) {
+      batch.update(doc.reference, {
+        'cluster': newCode,
+        'clusterLabel': newLabel,
+      });
+      n++;
+      if (n >= 400) {
+        await batch.commit();
+        batch = fs.batch();
+        n = 0;
+      }
+    }
+    if (n > 0) await batch.commit();
+
+    snack('Subject updated. ${modulesSnap.docs.length} module(s) updated.');
+  } catch (e) {
+    snack('Failed to update subject: $e');
+  }
+}
+
+class _EditSubjectDialog extends StatefulWidget {
+  final _Cluster cluster;
+  const _EditSubjectDialog({required this.cluster});
+
+  @override
+  State<_EditSubjectDialog> createState() => _EditSubjectDialogState();
+}
+
+class _EditSubjectDialogState extends State<_EditSubjectDialog> {
+  late final TextEditingController _code =
+      TextEditingController(text: widget.cluster.code);
+  late final TextEditingController _label =
+      TextEditingController(text: widget.cluster.label);
+  String? _error;
+
+  @override
+  void dispose() {
+    _code.dispose();
+    _label.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _code.text.trim().toUpperCase();
+    final label = _label.text.trim();
+    if (code.isEmpty) {
+      setState(() => _error = 'Please enter a subject code.');
+      return;
+    }
+    if (code.contains(RegExp(r'\s'))) {
+      setState(() => _error = 'The code cannot contain spaces (e.g. CRIM).');
+      return;
+    }
+    if (label.isEmpty) {
+      setState(() => _error = 'Please enter the subject name.');
+      return;
+    }
+    Navigator.pop(context, [code, label]);
+  }
+
+  InputDecoration _deco(String hint, IconData icon) => InputDecoration(
+        hintText: hint,
+        prefixIcon: Icon(icon, color: const Color(0xFF3949AB), size: 20),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.grey.shade300)),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.grey.shade300)),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide:
+                const BorderSide(color: Color(0xFF1A237E), width: 1.5)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('Edit Subject',
+          style: TextStyle(
+              color: Color(0xFF1A237E), fontWeight: FontWeight.bold)),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Subject Code',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3949AB))),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _code,
+              textCapitalization: TextCapitalization.characters,
+              decoration: _deco('e.g. CRIM', Icons.label_rounded),
+            ),
+            const SizedBox(height: 14),
+            const Text('Subject Name',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3949AB))),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _label,
+              decoration:
+                  _deco('e.g. Criminology', Icons.menu_book_rounded),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8EAF6),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                'Modules already uploaded under this subject are updated '
+                'automatically. Curriculum subjects (e.g. "CDI 3") are '
+                'matched to a subject by the code at the start of their '
+                'name, so keep the code in step with the curriculum.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF1A237E)),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!,
+                  style: const TextStyle(fontSize: 12, color: Colors.red)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1A237E),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8))),
+          onPressed: _submit,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TeacherModulesScreen (shared by Instructor + Admin accountTypes)
 //
 // Flow:  Subject categories (CDI, CLJ, CRIM …)  ->  that subject's modules
@@ -529,6 +798,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   void initState() {
     super.initState();
     _loadAccountType();
+    _seedDefaultModuleSubjects();
     _subjectsSub = _subjectsStream().listen(_onSubjectsChanged);
   }
 
@@ -944,7 +1214,12 @@ class _ManageModuleSubjectsScreenState
   @override
   void initState() {
     super.initState();
-    if (widget.isAdmin) _migrateOldClusters();
+    _prepare();
+  }
+
+  Future<void> _prepare() async {
+    await _seedDefaultModuleSubjects();
+    if (widget.isAdmin) await _migrateOldClusters();
   }
 
   // One-time move of the old module clusters out of the curriculum's
@@ -1050,10 +1325,12 @@ class _ManageModuleSubjectsScreenState
                               Expanded(
                                 child: Text(
                                   'These subjects are used when uploading modules. '
-                                  'Subjects with a lock are the 7 default subjects '
-                                  'and cannot be archived. Subjects you add can be '
-                                  'archived (this also archives their modules) and '
-                                  'restored later.',
+                                  'Every subject can be edited (code / name) or '
+                                  'archived, for example when the curriculum '
+                                  'changes. Archiving also archives its modules. '
+                                  'Archived subjects stay in the Archived tab and '
+                                  'can be restored; they are only deleted forever '
+                                  'if an admin chooses Delete there.',
                                   style: TextStyle(
                                       fontSize: 12,
                                       color: Color(0xFF1A237E)),
@@ -1065,6 +1342,7 @@ class _ManageModuleSubjectsScreenState
                         for (final s in subjects) ...[
                           _ManageSubjectRow(
                             cluster: s,
+                            onEdit: () => editSubject(context, s),
                             onArchive: () => archiveSubject(context, s),
                           ),
                           const SizedBox(height: 8),
@@ -2365,11 +2643,6 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 
     setState(() => _saving = true);
     try {
-      if (_isDefaultCode(code)) {
-        _snack('"$code" is already a default subject.');
-        return;
-      }
-
       final existing = await FirebaseFirestore.instance
           .collection(_kModuleSubjectsCol)
           .where('code', isEqualTo: code)
@@ -2557,9 +2830,14 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 
 class _ManageSubjectRow extends StatelessWidget {
   final _Cluster cluster;
+  final VoidCallback onEdit;
   final VoidCallback onArchive;
 
-  const _ManageSubjectRow({required this.cluster, required this.onArchive});
+  const _ManageSubjectRow({
+    required this.cluster,
+    required this.onEdit,
+    required this.onArchive,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2602,31 +2880,37 @@ class _ManageSubjectRow extends StatelessWidget {
               ],
             ),
           ),
-          if (cluster.isDefault)
-            const Tooltip(
-              message: 'Default subject: cannot be archived or deleted',
-              child: Padding(
-                padding: EdgeInsets.all(7),
-                child: Icon(Icons.lock_outline_rounded,
-                    size: 18, color: Colors.grey),
-              ),
-            )
-          else
-            Tooltip(
-              message: 'Archive',
-              child: GestureDetector(
-                onTap: onArchive,
-                child: Container(
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: archiveColor.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.inventory_2_outlined,
-                      size: 18, color: archiveColor),
+          Tooltip(
+            message: 'Edit',
+            child: GestureDetector(
+              onTap: onEdit,
+              child: Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A237E).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                child: const Icon(Icons.edit_outlined,
+                    size: 18, color: Color(0xFF1A237E)),
               ),
             ),
+          ),
+          const SizedBox(width: 6),
+          Tooltip(
+            message: 'Archive',
+            child: GestureDetector(
+              onTap: onArchive,
+              child: Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: archiveColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.inventory_2_outlined,
+                    size: 18, color: archiveColor),
+              ),
+            ),
+          ),
         ],
       ),
     );
