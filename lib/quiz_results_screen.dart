@@ -10,6 +10,13 @@ import 'review_results_screen.dart';
 /// examinees). The swap uses pushReplacement, so the back arrow still
 /// returns to wherever the user came from (no stack of alternating screens).
 ///
+/// LATEST ATTEMPT ONLY
+/// If a student retakes the quiz, only their most recent attempt is shown.
+/// De-duplication is per student + per quiz, so if 10 students take the
+/// same quiz, each of them still has exactly one (their latest) result.
+/// The summary tiles, filter counts and ranking are all computed from this
+/// de-duplicated list.
+///
 /// LAYOUT
 /// - A compact row of four stat tiles (Submissions, Average, Highest, Lowest).
 ///   Highest/Lowest are tappable and show the names.
@@ -87,6 +94,44 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
     final mm = d.minute.toString().padLeft(2, '0');
     final ampm = d.hour >= 12 ? 'PM' : 'AM';
     return '$h12:$mm $ampm';
+  }
+
+  /// True when submission [a] is more recent than submission [b].
+  /// A null timestamp means the server timestamp hasn't resolved yet (the
+  /// document was just written locally), so it counts as the newest.
+  bool _isNewer(Timestamp? a, Timestamp? b) {
+    if (a == null && b == null) return false;
+    if (a == null) return true;
+    if (b == null) return false;
+    return a.compareTo(b) > 0;
+  }
+
+  /// Keeps only the most recent attempt for each student + quiz pair.
+  /// Works even if old duplicate records already exist in Firestore.
+  List<QueryDocumentSnapshot> _latestAttempts(
+      List<QueryDocumentSnapshot> docs) {
+    final latest = <String, QueryDocumentSnapshot>{};
+    for (final d in docs) {
+      final m = d.data() as Map<String, dynamic>;
+      final student =
+          (m['studentUid'] ?? m['studentId'] ?? m['studentName'] ?? d.id)
+              .toString();
+      final quiz = (m['quizId'] ?? widget.quizId).toString();
+      final key = '${quiz}__$student';
+
+      final existing = latest[key];
+      if (existing == null) {
+        latest[key] = d;
+      } else {
+        final existingTs =
+            (existing.data() as Map<String, dynamic>)['submittedAt']
+                as Timestamp?;
+        if (_isNewer(m['submittedAt'] as Timestamp?, existingTs)) {
+          latest[key] = d;
+        }
+      }
+    }
+    return latest.values.toList();
   }
 
   void _showNamesSheet({
@@ -193,8 +238,11 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
               }
               if (snapshot.hasError) return _buildError(snapshot.error);
 
-              final docs = snapshot.data?.docs ?? [];
-              if (docs.isEmpty) return _buildEmpty();
+              final allDocs = snapshot.data?.docs ?? [];
+              if (allDocs.isEmpty) return _buildEmpty();
+
+              // Only the most recent attempt per student + quiz.
+              final docs = _latestAttempts(allDocs);
 
               // ── Normalise rows ─────────────────────────────────────────
               final rows = docs.map((d) {
@@ -241,7 +289,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                     : i + 1;
               }
 
-              // ── Stats (always computed on ALL rows, not the filter) ────
+              // ── Stats (always computed on ALL latest rows, not the filter)
               final total = rows.first.total;
               final avg = rows.map((r) => r.score).reduce((a, b) => a + b) /
                   rows.length;

@@ -101,8 +101,16 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     if (mounted) setState(() => _accessChecked = true);
   }
 
-  // Counts this student's past submissions for this quiz. If they've hit
-  // the free-attempt limit, checks `retake_requests` for an approved entry.
+  // Counts how many times this student has attempted this quiz. If they've
+  // hit the free-attempt limit, checks `retake_requests` for an approved
+  // entry.
+  //
+  // A student now has ONE result document per quiz (it is replaced on every
+  // retake), so the number of documents no longer equals the number of
+  // attempts. Instead each result stores an `attemptCount` field. Older
+  // results (saved before this change) have no such field and count as 1
+  // each, so the attempt count is the larger of "how many documents exist"
+  // and "the highest attemptCount stored".
   Future<void> _checkAttemptAccess() async {
     try {
       final resultsSnap = await FirebaseFirestore.instance
@@ -110,7 +118,13 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
           .where('quizId', isEqualTo: widget.quizId)
           .where('studentUid', isEqualTo: widget.studentUid)
           .get();
-      _attemptCount = resultsSnap.docs.length;
+
+      int count = resultsSnap.docs.length;
+      for (final d in resultsSnap.docs) {
+        final n = (d.data()['attemptCount'] as num?)?.toInt() ?? 1;
+        if (n > count) count = n;
+      }
+      _attemptCount = count;
 
       if (_attemptCount >= kMaxFreeAttempts) {
         final reqDoc = await FirebaseFirestore.instance
@@ -129,6 +143,27 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       // a transient network/Firestore issue.
       _accessDenied = false;
     }
+  }
+
+  // Saves the result as ONE document per student + quiz. The document ID is
+  // fixed (quizId_studentUid), so a retake overwrites the previous result
+  // instead of creating a duplicate record. `.set()` without merge replaces
+  // the whole document, so the old answers/score are fully discarded.
+  Future<void> _saveResult(int score, Map<String, dynamic> answersMap) async {
+    final docId = '${widget.quizId}_${widget.studentUid}';
+    await FirebaseFirestore.instance.collection('quiz_results').doc(docId).set({
+      'quizId':         widget.quizId,
+      'quizTitle':      _quizData?['title'] ?? '',
+      'studentUid':     widget.studentUid,
+      'studentId':      widget.studentUid,
+      'studentName':    widget.studentName,
+      'yearLevel':      widget.studentYearLevel,
+      'score':          score,
+      'totalQuestions': _questions.length,
+      'answers':        answersMap,
+      'attemptCount':   _attemptCount + 1,
+      'submittedAt':    FieldValue.serverTimestamp(),
+    });
   }
 
   // Once an instructor-approved retake has actually been used (i.e. the
@@ -303,18 +338,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       }
     }
     try {
-      await FirebaseFirestore.instance.collection('quiz_results').add({
-        'quizId':         widget.quizId,
-        'quizTitle':      _quizData?['title'] ?? '',
-        'studentUid':     widget.studentUid,
-        'studentId':      widget.studentUid,
-        'studentName':    widget.studentName,
-        'yearLevel':      widget.studentYearLevel,
-        'score':          score,
-        'totalQuestions': _questions.length,
-        'answers':        answersMap,
-        'submittedAt':    FieldValue.serverTimestamp(),
-      });
+      await _saveResult(score, answersMap);
       await _consumeApprovedRetakeIfNeeded();
       if (mounted) {
         setState(() {
@@ -433,18 +457,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     }
 
     try {
-      await FirebaseFirestore.instance.collection('quiz_results').add({
-        'quizId':         widget.quizId,
-        'quizTitle':      _quizData?['title'] ?? '',
-        'studentUid':     widget.studentUid,
-        'studentId':      widget.studentUid,
-        'studentName':    widget.studentName,
-        'yearLevel':      widget.studentYearLevel,
-        'score':          score,
-        'totalQuestions': _questions.length,
-        'answers':        answersMap,
-        'submittedAt':    FieldValue.serverTimestamp(),
-      });
+      await _saveResult(score, answersMap);
       await _consumeApprovedRetakeIfNeeded();
 
       if (mounted) {
