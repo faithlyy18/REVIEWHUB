@@ -143,10 +143,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 final years = <String, String>{};
                 for (final d in userSnap.data?.docs ?? const []) {
                   final m = d.data() as Map<String, dynamic>;
+                  // Full name: `fullName` if present, otherwise first (+middle)
+                  // + last when a last name exists, otherwise `name`.
+                  final fn = (m['fullName'] as String?)?.trim() ?? '';
                   final n = (m['name'] as String?)?.trim() ?? '';
                   final f = (m['firstName'] as String?)?.trim() ?? '';
+                  final mid = (m['middleName'] as String?)?.trim() ?? '';
                   final l = (m['lastName'] as String?)?.trim() ?? '';
-                  final full = n.isNotEmpty ? n : '$f $l'.trim();
+                  final composed =
+                      l.isNotEmpty ? [f, mid, l].where((s) => s.isNotEmpty).join(' ') : '';
+                  final full = fn.isNotEmpty
+                      ? fn
+                      : (composed.isNotEmpty ? composed : n);
                   if (full.isNotEmpty) names[d.id] = full;
                   final y = (m['yearLevel'] as String?)?.trim() ?? '';
                   if (y.isNotEmpty) years[d.id] = y;
@@ -251,9 +259,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
       if (quizId.isEmpty || quiz == null) continue;
 
       final uid = ((m['studentUid'] ?? m['studentId']) as String?) ?? '';
-      var name = ((m['studentName'] as String?) ?? '').trim();
+      // Full name: the student's account (users) is the source of truth,
+      // because the name saved on a result may be only a first name.
+      // The saved name is used only when no account name can be found.
+      final savedName = ((m['studentName'] as String?) ?? '').trim();
+      var name = names[uid] ?? '';
+      if (name.isEmpty) name = savedName;
       if (name.isEmpty || name.toLowerCase() == 'unknown student') {
-        name = names[uid] ?? 'Unknown Student';
+        name = 'Unknown Student';
       }
 
       var year = ((m['yearLevel'] as String?) ?? '').trim();
