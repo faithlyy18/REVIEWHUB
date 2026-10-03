@@ -28,6 +28,11 @@ import 'curriculum_repo.dart';
 // A curriculum subject belongs to a cluster when its code starts with the
 // cluster code followed by a space ("CDI 3" belongs to "CDI").
 //
+// FILE TYPE: every module card shows a file-type badge (PPTX, DOCX, PDF …).
+// New uploads save a `fileType` field (e.g. 'pptx'). Older modules that have no
+// `fileType` are detected from their saved `fileName` (or the end of `fileUrl`),
+// so they get a badge too. Anything unrecognised shows a neutral "FILE" badge.
+//
 // ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen now navigates
 //   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
 // Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
@@ -110,6 +115,93 @@ bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
   final c = clusterCode.trim().toUpperCase();
   if (c.isEmpty) return false;
   return s.startsWith('$c ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FILE TYPE helpers
+//
+// _extensionOf      : "Lecture 1.PPTX" -> "pptx" ('' when there is none)
+// _fileTypeInfoFor  : the badge label / icon / color for a module document.
+//                     Order of detection: `fileType` field -> `fileName`
+//                     -> the last part of `fileUrl`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lower-case extension of [name] without the dot, or '' when there is none.
+String _extensionOf(String name) {
+  var n = name.trim();
+  // Ignore any query string / fragment (in case a URL is passed in).
+  final cut = n.indexOf(RegExp(r'[?#]'));
+  if (cut != -1) n = n.substring(0, cut);
+  final slash = n.lastIndexOf('/');
+  if (slash != -1) n = n.substring(slash + 1);
+  final dot = n.lastIndexOf('.');
+  if (dot == -1 || dot == n.length - 1) return '';
+  return n.substring(dot + 1).toLowerCase();
+}
+
+class _FileTypeInfo {
+  final String label;
+  final IconData icon;
+  final Color color;
+  const _FileTypeInfo(this.label, this.icon, this.color);
+}
+
+const _FileTypeInfo _kUnknownFileType = _FileTypeInfo(
+    'FILE', Icons.insert_drive_file_rounded, Color(0xFF607D8B));
+
+_FileTypeInfo _fileTypeInfoFor(Map<String, dynamic> data) {
+  var ext = (data['fileType'] as String? ?? '').trim().toLowerCase();
+  if (ext.startsWith('.')) ext = ext.substring(1);
+  if (ext.isEmpty) ext = _extensionOf(data['fileName'] as String? ?? '');
+  if (ext.isEmpty) ext = _extensionOf(data['fileUrl'] as String? ?? '');
+
+  switch (ext) {
+    case 'pptx':
+    case 'ppt':
+      return _FileTypeInfo(
+          ext.toUpperCase(), Icons.slideshow_rounded, const Color(0xFFE65100));
+    case 'docx':
+    case 'doc':
+      return _FileTypeInfo(
+          ext.toUpperCase(), Icons.description_rounded, const Color(0xFF1565C0));
+    case 'pdf':
+      return const _FileTypeInfo(
+          'PDF', Icons.picture_as_pdf_rounded, Color(0xFFC62828));
+    case 'xlsx':
+    case 'xls':
+      return _FileTypeInfo(
+          ext.toUpperCase(), Icons.table_chart_rounded, const Color(0xFF2E7D32));
+    case 'txt':
+      return const _FileTypeInfo(
+          'TXT', Icons.text_snippet_rounded, Color(0xFF607D8B));
+    default:
+      return _kUnknownFileType;
+  }
+}
+
+/// Solid, clearly visible badge showing the module's file type.
+Widget _fileTypeBadge(Map<String, dynamic> data) {
+  final info = _fileTypeInfoFor(data);
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: info.color,
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(info.icon, size: 11, color: Colors.white),
+        const SizedBox(width: 4),
+        Text(info.label,
+            style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.3,
+                color: Colors.white)),
+      ],
+    ),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1652,10 +1744,11 @@ class _StudentSubjectModulesScreenState
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Module Card
 //
-// Shows the module's subject group (e.g. CDI) and, when set, its curriculum
-// subject (e.g. CDI 3). For STUDENTS, tapping "Read Module" first shows a
-// confirmation dialog saying which subject the module belongs to; the module
-// only opens after the student taps "Open Module". Teachers preview directly.
+// Shows the module's file-type badge (PPTX / DOCX / PDF …), its subject group
+// (e.g. CDI) and, when set, its curriculum subject (e.g. CDI 3). For STUDENTS,
+// tapping "Read Module" first shows a confirmation dialog saying which subject
+// the module belongs to; the module only opens after the student taps "Open
+// Module". Teachers preview directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModuleCard extends StatefulWidget {
@@ -1834,6 +1927,17 @@ class _ModuleCardState extends State<_ModuleCard> {
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                             color: Color(0xFF1A237E))),
+                    const SizedBox(height: 10),
+                    Text('File type',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[600])),
+                    const SizedBox(height: 4),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: _fileTypeBadge(widget.data),
+                    ),
                   ],
                 ),
               ),
@@ -1949,11 +2053,14 @@ class _ModuleCardState extends State<_ModuleCard> {
                         ],
                       ),
                       const SizedBox(height: 6),
-                      if (hasCluster)
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: [
+                      // The file-type badge is ALWAYS shown (even for old
+                      // modules that have no subject info).
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          _fileTypeBadge(widget.data),
+                          if (hasCluster) ...[
                             _chip(clusterIcon, clusterCode,
                                 color: clusterColor),
                             if (hasSubject)
@@ -1971,7 +2078,8 @@ class _ModuleCardState extends State<_ModuleCard> {
                               _chip(Icons.person_rounded, _teacherName!,
                                   color: clusterColor, maxWidth: 160),
                           ],
-                        ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -2747,6 +2855,9 @@ class _SmallActionButton extends StatelessWidget {
 //
 // The chosen group is saved as `cluster`, which is exactly what the Modules
 // page groups by — so a new CDI upload lands in the existing CDI category.
+//
+// The chosen file's extension is saved as `fileType` (e.g. 'pptx') and drives
+// the file-type badge on the module cards.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
@@ -2924,6 +3035,11 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
         bytes: _deviceFile!.bytes!,
       );
 
+      // File type (e.g. 'pptx', 'docx', 'pdf'): from the picked file's own
+      // name first, then from the name Drive saved it under.
+      var fileType = _extensionOf(_deviceFile!.name);
+      if (fileType.isEmpty) fileType = _extensionOf(result.fileName);
+
       await FirebaseFirestore.instance.collection('modules').add({
         'title': title,
         'cluster': cluster.code,
@@ -2934,6 +3050,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
         'fileUrl': result.viewUrl,
         'driveFileId': result.fileId,
         'fileName': result.fileName,
+        'fileType': fileType,
         'driveOwnerEmail': result.accountEmail,
         'uploadedBy': widget.teacherUid,
         'uploadedAt': FieldValue.serverTimestamp(),
@@ -3324,6 +3441,11 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                           : Colors.black87),
                 ),
               ),
+              // Shows the detected file type right after a file is chosen.
+              if (_deviceFile != null) ...[
+                const SizedBox(width: 8),
+                _fileTypeBadge({'fileName': _deviceFile!.name}),
+              ],
             ],
           ),
         ),
