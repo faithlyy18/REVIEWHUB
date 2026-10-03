@@ -15,6 +15,11 @@ import 'reports_screen.dart'; // Admin-only Reports (opened as its own page)
 // hardcoded here. Subjects come live from Firestore through CurriculumRepo,
 // and only the admin can change them (Manage Curriculum). This screen only
 // READS the curriculum, for the read-only "All Subjects" viewer.
+//
+// MODULE SUBJECTS (CRIM, CLJ, CDI …) are managed ONLY by the admin through
+// the drawer item "Manage Subjects" (ManageModuleSubjectsScreen in
+// modules_screen.dart). Instructors can only pick from them when adding a
+// module.
 
 // Formats a Firestore Timestamp (or DateTime) into e.g. "Aug 8, 2026".
 // Returns null if the value is missing or of an unexpected type, so
@@ -530,7 +535,7 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
   }
 
   // ── Hamburger menu drawer: Reviews, Modules, Archive, Requests, (Reports,
-  // Overview, Manage Curriculum for admins) ──
+  // Overview, Manage Curriculum, Manage Subjects for admins) ──
   Widget _buildDrawer() {
     Widget navItem({
       required IconData icon,
@@ -647,8 +652,8 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                 padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 child: Divider(height: 1),
               ),
-              // Opens the admin's Manage Curriculum screen (add / edit /
-              // archive / restore / delete subjects).
+              // Admin only: curriculum subjects (CRIM 1, CDI 3 …) — add /
+              // edit / archive / restore / delete.
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 child: ListTile(
@@ -666,6 +671,32 @@ class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
                       context,
                       MaterialPageRoute(
                           builder: (_) => const ManageCurriculumScreen()),
+                    );
+                  },
+                ),
+              ),
+              // Admin only: module subjects (CRIM, CLJ, CDI …) that
+              // instructors choose from in the Add Module screen — add /
+              // edit / archive / restore / delete. Instructors never see
+              // this item.
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                child: ListTile(
+                  leading:
+                      const Icon(Icons.bookmarks_rounded, color: Colors.grey),
+                  title: const Text(
+                    'Manage Subjects',
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                  ),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  onTap: () {
+                    Navigator.pop(context); // close the drawer first
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              const ManageModuleSubjectsScreen(isAdmin: true)),
                     );
                   },
                 ),
@@ -1174,7 +1205,8 @@ class _ReviewsTabBody extends StatelessWidget {
 // Archive Tab Body  (Reviews + Modules sub-tabs)
 //
 // Archived SUBJECTS are no longer shown here — the admin restores or
-// permanently deletes them from the Archived tab of Manage Curriculum.
+// permanently deletes them from the Archived tab of Manage Curriculum
+// (curriculum subjects) or Manage Subjects (module subjects).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ArchiveTabBody extends StatelessWidget {

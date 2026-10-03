@@ -16,8 +16,18 @@ import 'curriculum_repo.dart';
 //
 // The curriculum (CurriculumRepo, numbered subjects such as "CRIM 1") stays in
 // the `subjects` collection. The two features are completely separate:
-//   • Manage Curriculum      -> `subjects`        (curriculum_repo.dart)
-//   • Add Module > Add / manage subjects -> `moduleSubjects` (this file)
+//   • Manage Curriculum -> `subjects`        (curriculum_repo.dart)
+//   • Manage Subjects   -> `moduleSubjects`  (this file, ADMIN ONLY)
+//
+// WHO CAN DO WHAT
+//   • ADMIN      : add, edit, archive, restore and permanently delete module
+//                  subjects (drawer > Manage Subjects).
+//   • INSTRUCTOR : can only SELECT from the existing, active subjects when
+//                  uploading a module. The Add Module sheet has no add/manage
+//                  link, and ManageModuleSubjectsScreen re-checks the admin
+//                  role itself. The subject chips are a live stream, so any
+//                  admin change shows up immediately.
+//   Also protect the `moduleSubjects` collection with Firestore rules.
 //
 // Modules keep referencing their subject through `cluster: <code>`.
 //
@@ -33,18 +43,19 @@ import 'curriculum_repo.dart';
 // `fileType` are detected from their saved `fileName` (or the end of `fileUrl`),
 // so they get a badge too. Anything unrecognised shows a neutral "FILE" badge.
 //
-// ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen now navigates
+// ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen navigates
 //   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
 // Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
 // the first word of `subject`, e.g. "CDI 3" -> "CDI"). Uploading a new module
 // never creates a new category by itself: it simply joins the existing group.
 //
-// STUDENT SIDE: StudentModulesScreen now navigates
+// STUDENT SIDE: StudentModulesScreen navigates
 //   Year Level -> Semester -> Subject -> Modules -> Read Module
 //
 // ALL subjects (including the 7 starters: CRIM, CLJ, CDI, FORENSIC, LEA, CA,
-// ENG) can be edited and archived. Archived subjects stay in the Archived tab
-// and are only deleted permanently when an admin chooses "Delete" there.
+// ENG) can be edited and archived by the admin. Archived subjects stay in the
+// Archived tab and are only deleted permanently when an admin chooses "Delete"
+// there.
 //
 // ARCHIVE MODEL: module subjects are never hard-deleted from the active list.
 // Archiving sets `archived: true` and cascade-archives every active module
@@ -207,11 +218,11 @@ Widget _fileTypeBadge(Map<String, dynamic> data) {
 // STARTER MODULE SUBJECTS (fully editable)
 //
 // The 7 starting subject clusters. They are only a STARTING LIST: the first
-// time the app runs, they are copied into Firestore (`moduleSubjects`) once
-// (see _seedDefaultModuleSubjects). After that they are ordinary subjects —
-// they can be edited (code / name), archived, restored, and permanently
-// deleted by an admin, exactly like subjects added manually. They are never
-// re-created once the seed marker exists.
+// time an ADMIN opens the app screens, they are copied into Firestore
+// (`moduleSubjects`) once (see _seedDefaultModuleSubjects). After that they
+// are ordinary subjects — they can be edited (code / name), archived,
+// restored, and permanently deleted by an admin, exactly like subjects added
+// manually. They are never re-created once the seed marker exists.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const List<List<String>> _kDefaultModuleSubjects = [
@@ -268,6 +279,10 @@ ModuleCluster _clusterFromDoc(QueryDocumentSnapshot doc) {
 /// Live stream of every ACTIVE (non-archived) module subject, ordered by
 /// creation time. Sorted client-side so a pending serverTimestamp() write
 /// (createdAt == null) is placed last instead of being hidden by Firestore.
+///
+/// This is the single source the instructor's subject chips read from, so any
+/// change the admin makes (add / edit / archive / restore / delete) shows up
+/// for instructors immediately.
 Stream<List<ModuleCluster>> _subjectsStream() {
   return FirebaseFirestore.instance
       .collection(_kModuleSubjectsCol)
@@ -277,9 +292,10 @@ Stream<List<ModuleCluster>> _subjectsStream() {
     final seeded = snap.docs.any((d) => d.id == _kSeedDocId);
     final list = stored.where((c) => !c.isArchived).toList();
 
-    // Until the starter subjects have been copied to Firestore (by a
-    // teacher/admin screen), show them from the built-in list so students
-    // never see an empty page. Once seeded, Firestore is the only source.
+    // Until the starter subjects have been copied to Firestore (by an
+    // admin screen), show them from the built-in list so students and
+    // instructors never see an empty page. Once seeded, Firestore is the
+    // only source.
     if (!seeded) {
       final have = stored.map((c) => c.code.trim().toUpperCase()).toSet();
       list.addAll(_defaultClusters
@@ -308,6 +324,9 @@ List<ModuleCluster> _storedClusters(QuerySnapshot<Map<String, dynamic>> snap) =>
 /// editable and archivable subjects. A marker document records that this has
 /// happened, so a subject that is later archived, edited or deleted is never
 /// brought back. Safe to call repeatedly; failures are ignored.
+///
+/// ADMIN ONLY: call this only for admin accounts (Firestore rules should only
+/// let admins write to `moduleSubjects`).
 Future<void> _seedDefaultModuleSubjects() async {
   try {
     final fs = FirebaseFirestore.instance;
@@ -359,7 +378,8 @@ Stream<List<ModuleCluster>> _archivedSubjectsStream() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public helper: open the Add Subject sheet from anywhere.
+// Public helper: open the Add Subject sheet (ADMIN ONLY — used from
+// ManageModuleSubjectsScreen, which re-checks the admin role itself).
 // ─────────────────────────────────────────────────────────────────────────────
 
 void showAddSubjectSheet(BuildContext context) {
@@ -372,7 +392,7 @@ void showAddSubjectSheet(BuildContext context) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Archive a module subject — auto-archives its modules.
+// Archive a module subject — auto-archives its modules. (ADMIN ONLY)
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> archiveSubject(BuildContext context, ModuleCluster cluster) async {
@@ -445,6 +465,7 @@ Future<void> archiveSubject(BuildContext context, ModuleCluster cluster) async {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Restore an archived module subject — also restores its archived modules.
+// (ADMIN ONLY)
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> restoreSubject(BuildContext context, ModuleCluster cluster) async {
@@ -544,7 +565,7 @@ Future<void> permanentlyDeleteSubject(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Edit a module subject (code and/or name).
+// Edit a module subject (code and/or name). (ADMIN ONLY)
 //
 // Modules point to their subject through `cluster` (the code) and
 // `clusterLabel` (the name), so when either changes, every module under this
@@ -765,6 +786,9 @@ class _EditSubjectDialogState extends State<_EditSubjectDialog> {
 //   • Inside a category the modules are sorted numerically
 //     (CDI 1 -> CDI 2 -> … -> CDI 10), then by title.
 //   • Every module card keeps Preview Module + Archive.
+//   • Subjects are NOT managed here. Instructors only pick from the existing
+//     subjects in the Add Module sheet; only the admin manages subjects
+//     (drawer > Manage Subjects).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TeacherModulesScreen extends StatefulWidget {
@@ -798,7 +822,6 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   void initState() {
     super.initState();
     _loadAccountType();
-    _seedDefaultModuleSubjects();
     _subjectsSub = _subjectsStream().listen(_onSubjectsChanged);
   }
 
@@ -816,7 +839,11 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
           .doc(_user.uid)
           .get();
       final accountType = doc.data()?['accountType'] as String?;
-      if (mounted) setState(() => _isAdmin = accountType == 'admin');
+      final admin = accountType == 'admin';
+      if (mounted) setState(() => _isAdmin = admin);
+      // Only the admin may write subjects, so only the admin seeds the
+      // starter list. Instructors/students just read it.
+      if (admin) _seedDefaultModuleSubjects();
     } catch (_) {
       // Default stays non-admin on failure — the safer fallback.
     }
@@ -988,13 +1015,12 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
                 builder: (_) => _UploadModuleSheet(
                   teacherUid: _user?.uid ?? '',
                   clusters: clusters,
-                  isAdmin: _isAdmin,
                   onSaved: _onModuleSaved,
                 ),
               ),
             ),
-            // Subject management lives only inside the Add Module flow
-            // ("Add / manage subjects").
+            // Subjects are managed only by the admin (drawer > Manage
+            // Subjects). Instructors just pick from them in Add Module.
             body: StreamBuilder<QuerySnapshot>(
               stream: _modulesStream,
               builder: (context, snapshot) {
@@ -1189,18 +1215,24 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ManageModuleSubjectsScreen
+// ManageModuleSubjectsScreen  (ADMIN ONLY)
 //
-// Opened from Add Module > "Add / manage subjects". Separate from Manage
+// Opened from the admin drawer ("Manage Subjects"). Separate from Manage
 // Curriculum.
-//   Active tab   : list of module subjects with an Archive button
-//   Archived tab : archived subjects with Restore (and Delete Permanently for
-//                  admins)
-//   "Add Subject": adds a subject that instantly appears in the Add Module
-//                  subject picker.
+//   Active tab   : list of module subjects with Edit + Archive buttons
+//   Archived tab : archived subjects with Restore and Delete Permanently
+//   "Add Subject": adds a subject that instantly appears in every
+//                  instructor's Add Module subject picker.
+//
+// The screen re-checks the admin role from Firestore itself (the [isAdmin]
+// constructor value is NOT trusted), so an instructor who somehow reaches it
+// only sees an "Administrators only" page. Also protect `moduleSubjects`
+// with Firestore security rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ManageModuleSubjectsScreen extends StatefulWidget {
+  /// Kept so older callers still compile. The role is re-checked from
+  /// Firestore inside the screen and this value is NOT trusted.
   final bool isAdmin;
   const ManageModuleSubjectsScreen({super.key, this.isAdmin = false});
 
@@ -1211,20 +1243,44 @@ class ManageModuleSubjectsScreen extends StatefulWidget {
 
 class _ManageModuleSubjectsScreenState
     extends State<ManageModuleSubjectsScreen> {
+  bool _checking = true;
+  bool _allowed = false;
+
   @override
   void initState() {
     super.initState();
-    _prepare();
+    _init();
   }
 
-  Future<void> _prepare() async {
-    await _seedDefaultModuleSubjects();
-    if (widget.isAdmin) await _migrateOldClusters();
+  Future<void> _init() async {
+    var ok = false;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .get();
+        ok = doc.data()?['accountType'] == 'admin';
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (ok) {
+      await _seedDefaultModuleSubjects();
+      await _migrateOldClusters();
+    }
+    if (!mounted) return;
+    setState(() {
+      _allowed = ok;
+      _checking = false;
+    });
   }
 
   // One-time move of the old module clusters out of the curriculum's
   // `subjects` collection into `moduleSubjects`. Curriculum documents always
-  // have yearLevel/semester, so they are skipped. Safe to run repeatedly.
+  // have yearLevel/semester, so they are skipped. Admin only. Safe to run
+  // repeatedly.
   Future<void> _migrateOldClusters() async {
     try {
       final fs = FirebaseFirestore.instance;
@@ -1246,8 +1302,57 @@ class _ManageModuleSubjectsScreenState
     }
   }
 
+  PreferredSizeWidget _plainBar() => AppBar(
+        backgroundColor: const Color(0xFF1A237E),
+        foregroundColor: Colors.white,
+        title: const Text('Manage Subjects',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+      );
+
   @override
   Widget build(BuildContext context) {
+    if (_checking) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF4F6FB),
+        appBar: _plainBar(),
+        body: const Center(
+            child: CircularProgressIndicator(color: Color(0xFF1A237E))),
+      );
+    }
+
+    if (!_allowed) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF4F6FB),
+        appBar: _plainBar(),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.lock_outline_rounded,
+                    size: 56, color: Colors.grey[400]),
+                const SizedBox(height: 14),
+                const Text('Administrators only',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: Color(0xFF1A237E))),
+                const SizedBox(height: 6),
+                Text(
+                  'Only an administrator can add, edit, archive, restore or '
+                  'delete subjects. You can choose from the existing subjects '
+                  'when uploading a module.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -1324,13 +1429,14 @@ class _ManageModuleSubjectsScreenState
                               SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  'These subjects are used when uploading modules. '
+                                  'These subjects are what instructors choose '
+                                  'from when uploading modules, and any change '
+                                  'you make appears for them instantly. '
                                   'Every subject can be edited (code / name) or '
-                                  'archived, for example when the curriculum '
-                                  'changes. Archiving also archives its modules. '
-                                  'Archived subjects stay in the Archived tab and '
-                                  'can be restored; they are only deleted forever '
-                                  'if an admin chooses Delete there.',
+                                  'archived. Archiving also archives its '
+                                  'modules. Archived subjects stay in the '
+                                  'Archived tab and can be restored, or deleted '
+                                  'forever from there.',
                                   style: TextStyle(
                                       fontSize: 12,
                                       color: Color(0xFF1A237E)),
@@ -1352,8 +1458,8 @@ class _ManageModuleSubjectsScreenState
                   },
                 ),
 
-                // ── Archived ─────────────────────────────────────────────
-                ArchivedSubjectsList(canDelete: widget.isAdmin),
+                // ── Archived (admin: restore + permanent delete) ─────────
+                const ArchivedSubjectsList(canDelete: true),
               ],
             ),
           ),
@@ -2580,11 +2686,11 @@ void _showSuccessDialog(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Add Subject Bottom Sheet
+// Add Subject Bottom Sheet  (ADMIN ONLY — opened from Manage Subjects)
 //
 // Adds a MODULE subject (collection `moduleSubjects`). It is separate from the
-// curriculum. The new subject appears immediately in the Add Module subject
-// picker and in Manage Subjects.
+// curriculum. The new subject appears immediately in every instructor's Add
+// Module subject picker and in Manage Subjects.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AddSubjectSheet extends StatefulWidget {
@@ -2807,7 +2913,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A single row in the Active list of ManageModuleSubjectsScreen.
+// A single row in the Active list of ManageModuleSubjectsScreen (admin only).
 // The button ARCHIVES the subject (it is not a permanent delete).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2902,8 +3008,9 @@ class _ManageSubjectRow extends StatelessWidget {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ArchivedSubjectsList — archived module subjects with Restore and (optionally)
-// Delete Permanently. Set [canDelete] to false to hide permanent delete
-// (e.g. for instructors). Default true keeps old callers working.
+// Delete Permanently. Set [canDelete] to false to hide permanent delete.
+// Default true keeps old callers working. Used only by the admin's Manage
+// Subjects screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ArchivedSubjectsList extends StatelessWidget {
@@ -3111,9 +3218,10 @@ class _SmallActionButton extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Add Module Bottom Sheet
 //
-// The Subject picker is LIVE: it listens to the active module subjects, so a
-// subject added (or archived/restored) while this sheet is open shows up
-// right away. The "Add / manage subjects" button opens Manage Subjects.
+// The Subject picker is LIVE and SELECT-ONLY: it listens to the active module
+// subjects managed by the admin, so a subject the admin adds, edits, archives
+// or restores while this sheet is open shows up right away. Instructors can
+// only choose from it; there is no add/manage link here.
 //
 // After choosing a subject group (e.g. CDI), a "Curriculum subject" dropdown
 // lists that group's curriculum subjects (CDI 1 … CDI 9) from the LIVE
@@ -3130,14 +3238,12 @@ class _SmallActionButton extends StatelessWidget {
 class _UploadModuleSheet extends StatefulWidget {
   final String teacherUid;
   final List<ModuleCluster> clusters;
-  final bool isAdmin;
   final void Function(String title, ModuleCluster cluster) onSaved;
 
   const _UploadModuleSheet({
     required this.teacherUid,
     required this.clusters,
     required this.onSaved,
-    this.isAdmin = false,
   });
 
   @override
@@ -3161,7 +3267,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   ];
 
   /// The chosen subject, falling back to the first one if the chosen subject
-  /// no longer exists (e.g. it was just archived).
+  /// no longer exists (e.g. the admin just archived it).
   ModuleCluster? get _selectedCluster {
     for (final c in _clusters) {
       if (c.code == _selectedCode) return c;
@@ -3254,20 +3360,12 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
-  void _openManageSubjects() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-          builder: (_) => ManageModuleSubjectsScreen(isAdmin: widget.isAdmin)),
-    );
-  }
-
   Future<void> _save() async {
     final title = _titleController.text.trim();
     final cluster = _selectedCluster;
 
     if (cluster == null) {
-      _snack('No subjects available yet. Tap "Add / manage subjects" first.');
+      _snack('No subjects available yet. Please ask an administrator to add subjects.');
       return;
     }
 
@@ -3350,6 +3448,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     }
   }
 
+  /// SELECT-ONLY subject chips, fed by the live list of active subjects the
+  /// admin manages. No add / edit / manage controls are offered here.
   Widget _buildSubjectPicker() {
     return StreamBuilder<List<ModuleCluster>>(
       stream: _subjectsStream(),
@@ -3358,102 +3458,77 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
         _clusters = snap.data ?? _clusters;
         final selectedCode = _selectedCluster?.code;
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_clusters.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF3E0),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFFFCC80)),
-                ),
-                child: const Text(
-                  'No subjects exist yet. Tap "Add / manage subjects" below to add one.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFFE65100)),
-                ),
-              )
-            else
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _clusters.map((c) {
-                  final isSelected = selectedCode == c.code;
-                  return GestureDetector(
-                    onTap: _saving
-                        ? null
-                        : () => setState(() {
-                              if (_selectedCode != c.code) {
-                                // A different group has different curriculum
-                                // subjects, so clear the previous choice.
-                                _selectedSubjectCode = null;
-                              }
-                              _selectedCode = c.code;
-                            }),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? c.color
-                            : c.color.withValues(alpha: 0.07),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isSelected
-                              ? c.color
-                              : c.color.withValues(alpha: 0.3),
-                          width: isSelected ? 2 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(c.icon,
-                              size: 16,
-                              color: isSelected ? Colors.white : c.color),
-                          const SizedBox(width: 7),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(c.code,
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: isSelected
-                                          ? Colors.white
-                                          : c.color)),
-                              Text(c.label,
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      color: isSelected
-                                          ? Colors.white70
-                                          : c.color.withValues(alpha: 0.7))),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: _saving ? null : _openManageSubjects,
-                icon: const Icon(Icons.add_rounded, size: 16),
-                label: const Text('Add / manage subjects'),
-                style: TextButton.styleFrom(
-                  foregroundColor: const Color(0xFF1A237E),
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  minimumSize: const Size(0, 32),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
+        if (_clusters.isEmpty) {
+          return Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF3E0),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFFFCC80)),
             ),
-          ],
+            child: const Text(
+              'No subjects are available yet. Please ask an administrator to add subjects.',
+              style: TextStyle(fontSize: 12, color: Color(0xFFE65100)),
+            ),
+          );
+        }
+
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _clusters.map((c) {
+            final isSelected = selectedCode == c.code;
+            return GestureDetector(
+              onTap: _saving
+                  ? null
+                  : () => setState(() {
+                        if (_selectedCode != c.code) {
+                          // A different group has different curriculum
+                          // subjects, so clear the previous choice.
+                          _selectedSubjectCode = null;
+                        }
+                        _selectedCode = c.code;
+                      }),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isSelected ? c.color : c.color.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color:
+                        isSelected ? c.color : c.color.withValues(alpha: 0.3),
+                    width: isSelected ? 2 : 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(c.icon,
+                        size: 16, color: isSelected ? Colors.white : c.color),
+                    const SizedBox(width: 7),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(c.code,
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? Colors.white : c.color)),
+                        Text(c.label,
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: isSelected
+                                    ? Colors.white70
+                                    : c.color.withValues(alpha: 0.7))),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
         );
       },
     );
