@@ -1724,6 +1724,12 @@ class _ArchivedModuleCard extends StatelessWidget {
 // COLOR NOTE: Reviews stays indigo-only, whether or not a review has
 // takers — no separate accent color. Archive keeps its own orange/red
 // palette, so the two tabs are still visually distinct from each other.
+//
+// RESULT COUNT: the "View Results (N)" button and the "N students taken"
+// chip show the number of UNIQUE students (latest attempt only), using the
+// same student key as QuizResultsScreen / ReviewResultsScreen. Retakes do
+// not increase the count. Old attempts are only ignored for display —
+// nothing is deleted or changed in Firestore.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _QuizCard extends StatelessWidget {
@@ -1742,6 +1748,22 @@ class _QuizCard extends StatelessWidget {
     required this.onViewResults,
   });
 
+  /// Number of UNIQUE students who took this quiz (latest attempt only).
+  /// Uses the same student key as QuizResultsScreen / ReviewResultsScreen,
+  /// so a student with an old attempt and a retake counts once.
+  /// Read-only: the retake history in Firestore is never touched.
+  static int _uniqueStudentCount(List<QueryDocumentSnapshot> docs) {
+    final keys = <String>{};
+    for (final d in docs) {
+      final m = d.data() as Map<String, dynamic>;
+      final student =
+          (m['studentUid'] ?? m['studentId'] ?? m['studentName'] ?? d.id)
+              .toString();
+      keys.add(student);
+    }
+    return keys.length;
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = quiz['title'] as String? ?? 'Untitled Review';
@@ -1749,14 +1771,15 @@ class _QuizCard extends StatelessWidget {
     final yearLevel = quiz['yearLevel'] as String? ?? '';
     final subject = quiz['subject'] as String? ?? '';
 
-    return FutureBuilder<AggregateQuerySnapshot>(
-      future: FirebaseFirestore.instance
+    // Live stream (instead of a one-time count()) so the number also
+    // updates right away when a student retakes or submits.
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
           .collection('quiz_results')
           .where('quizId', isEqualTo: quizId)
-          .count()
-          .get(),
+          .snapshots(),
       builder: (context, snap) {
-        final takenCount = snap.data?.count ?? 0;
+        final takenCount = _uniqueStudentCount(snap.data?.docs ?? []);
         final hasTakers = takenCount > 0;
 
         // Reviews stays indigo regardless of takers — no accent swap.
