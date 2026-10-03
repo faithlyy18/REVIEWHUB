@@ -53,7 +53,7 @@ import 'curriculum_repo.dart';
 
 const String _kModuleSubjectsCol = 'moduleSubjects';
 
-class _Cluster {
+class ModuleCluster {
   final String id; // Firestore doc id
   final String code;
   final String label;
@@ -63,7 +63,7 @@ class _Cluster {
   final bool isArchived;
   final DateTime? archivedAt;
 
-  const _Cluster({
+  const ModuleCluster({
     required this.id,
     required this.code,
     required this.label,
@@ -235,9 +235,9 @@ DateTime _seedTime(int i) => DateTime(2020, 1, 1).add(Duration(seconds: i));
 /// been copied to Firestore. It is not a subject and is always skipped.
 const String _kSeedDocId = '_seeded_v1';
 
-final List<_Cluster> _defaultClusters = [
+final List<ModuleCluster> _defaultClusters = [
   for (var i = 0; i < _kDefaultModuleSubjects.length; i++)
-    _Cluster(
+    ModuleCluster(
       id: 'default_${_kDefaultModuleSubjects[i][0]}',
       code: _kDefaultModuleSubjects[i][0],
       label: _kDefaultModuleSubjects[i][1],
@@ -247,13 +247,13 @@ final List<_Cluster> _defaultClusters = [
     ),
 ];
 
-_Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
+ModuleCluster _clusterFromDoc(QueryDocumentSnapshot doc) {
   final data = doc.data() as Map<String, dynamic>;
   final code = data['code'] as String? ?? '';
   final label = data['label'] as String? ?? code;
   final rawCreatedAt = data['createdAt'];
   final rawArchivedAt = data['archivedAt'];
-  return _Cluster(
+  return ModuleCluster(
     id: doc.id,
     code: code,
     label: label,
@@ -268,7 +268,7 @@ _Cluster _clusterFromDoc(QueryDocumentSnapshot doc) {
 /// Live stream of every ACTIVE (non-archived) module subject, ordered by
 /// creation time. Sorted client-side so a pending serverTimestamp() write
 /// (createdAt == null) is placed last instead of being hidden by Firestore.
-Stream<List<_Cluster>> _subjectsStream() {
+Stream<List<ModuleCluster>> _subjectsStream() {
   return FirebaseFirestore.instance
       .collection(_kModuleSubjectsCol)
       .snapshots()
@@ -297,7 +297,7 @@ Stream<List<_Cluster>> _subjectsStream() {
 }
 
 /// Every stored module subject (the seed marker and blank docs are skipped).
-List<_Cluster> _storedClusters(QuerySnapshot<Map<String, dynamic>> snap) =>
+List<ModuleCluster> _storedClusters(QuerySnapshot<Map<String, dynamic>> snap) =>
     snap.docs
         .where((d) => d.id != _kSeedDocId)
         .map(_clusterFromDoc)
@@ -342,7 +342,7 @@ Future<void> _seedDefaultModuleSubjects() async {
 }
 
 /// Live stream of every ARCHIVED module subject, newest archived first.
-Stream<List<_Cluster>> _archivedSubjectsStream() {
+Stream<List<ModuleCluster>> _archivedSubjectsStream() {
   return FirebaseFirestore.instance
       .collection(_kModuleSubjectsCol)
       .snapshots()
@@ -375,7 +375,7 @@ void showAddSubjectSheet(BuildContext context) {
 // Archive a module subject — auto-archives its modules.
 // ─────────────────────────────────────────────────────────────────────────────
 
-Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
+Future<void> archiveSubject(BuildContext context, ModuleCluster cluster) async {
   final confirm = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -447,7 +447,7 @@ Future<void> archiveSubject(BuildContext context, _Cluster cluster) async {
 // Restore an archived module subject — also restores its archived modules.
 // ─────────────────────────────────────────────────────────────────────────────
 
-Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
+Future<void> restoreSubject(BuildContext context, ModuleCluster cluster) async {
   try {
     final firestore = FirebaseFirestore.instance;
     final modulesSnap = await firestore
@@ -488,7 +488,7 @@ Future<void> restoreSubject(BuildContext context, _Cluster cluster) async {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Future<void> permanentlyDeleteSubject(
-    BuildContext context, _Cluster cluster) async {
+    BuildContext context, ModuleCluster cluster) async {
   final confirm = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -552,7 +552,7 @@ Future<void> permanentlyDeleteSubject(
 // orphaned and no module is lost.
 // ─────────────────────────────────────────────────────────────────────────────
 
-Future<void> editSubject(BuildContext context, _Cluster cluster) async {
+Future<void> editSubject(BuildContext context, ModuleCluster cluster) async {
   final res = await showDialog<List<String>>(
     context: context,
     builder: (_) => _EditSubjectDialog(cluster: cluster),
@@ -619,7 +619,7 @@ Future<void> editSubject(BuildContext context, _Cluster cluster) async {
 }
 
 class _EditSubjectDialog extends StatefulWidget {
-  final _Cluster cluster;
+  final ModuleCluster cluster;
   const _EditSubjectDialog({required this.cluster});
 
   @override
@@ -780,10 +780,10 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   final _user = FirebaseAuth.instance.currentUser;
   bool _isAdmin = false;
 
-  StreamSubscription<List<_Cluster>>? _subjectsSub;
+  StreamSubscription<List<ModuleCluster>>? _subjectsSub;
   List<String>? _prevCodes;
 
-  late final Stream<List<_Cluster>> _clustersStream = _subjectsStream();
+  late final Stream<List<ModuleCluster>> _clustersStream = _subjectsStream();
   late final Stream<QuerySnapshot> _modulesStream = FirebaseFirestore.instance
       .collection('modules')
       .where('uploadedBy', isEqualTo: _user?.uid)
@@ -822,7 +822,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     }
   }
 
-  void _onSubjectsChanged(List<_Cluster> clusters) {
+  void _onSubjectsChanged(List<ModuleCluster> clusters) {
     final codes = clusters.map((c) => c.code).toList();
     if (_prevCodes != null && !_isAdmin && mounted) {
       final added = codes.where((c) => !_prevCodes!.contains(c)).toList();
@@ -880,7 +880,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     if (mounted) _snack('Module archived.');
   }
 
-  void _onModuleSaved(String title, _Cluster cluster) {
+  void _onModuleSaved(String title, ModuleCluster cluster) {
     _showSuccessDialog(context, title, cluster);
   }
 
@@ -924,7 +924,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   }
 
   /// Full name of a category, e.g. 'Criminal Detection and Investigation'.
-  String _labelFor(String code, List<_Cluster> clusters,
+  String _labelFor(String code, List<ModuleCluster> clusters,
       List<QueryDocumentSnapshot> items) {
     for (final c in clusters) {
       if (c.code.trim().toUpperCase() == code) return c.label;
@@ -941,7 +941,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   /// Default subjects first (CRIM, CLJ, CDI …), then subjects added later,
   /// then anything unknown A–Z.
   List<String> _sortedCodes(
-      Iterable<String> codes, List<_Cluster> clusters) {
+      Iterable<String> codes, List<ModuleCluster> clusters) {
     final order = <String, int>{
       for (var i = 0; i < clusters.length; i++)
         clusters[i].code.trim().toUpperCase(): i,
@@ -967,7 +967,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) setState(() => _categoryCode = null);
       },
-      child: StreamBuilder<List<_Cluster>>(
+      child: StreamBuilder<List<ModuleCluster>>(
         stream: _clustersStream,
         builder: (context, subjSnap) {
           final clusters = subjSnap.data ?? [];
@@ -1065,7 +1065,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   // ── Page 1: subject categories ──────────────────────────────────────────
 
   Widget _buildCategoryList(Map<String, List<QueryDocumentSnapshot>> groups,
-      List<_Cluster> clusters) {
+      List<ModuleCluster> clusters) {
     final codes = _sortedCodes(groups.keys, clusters);
 
     return ListView.separated(
@@ -1090,7 +1090,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   // ── Page 2: the modules inside one category ─────────────────────────────
 
   Widget _buildCategoryPage(String code, List<QueryDocumentSnapshot> items,
-      List<_Cluster> clusters) {
+      List<ModuleCluster> clusters) {
     final color = _colorForCode(code);
     final label = _labelFor(code, clusters, items);
 
@@ -1281,7 +1281,7 @@ class _ManageModuleSubjectsScreenState
             child: TabBarView(
               children: [
                 // ── Active ───────────────────────────────────────────────
-                StreamBuilder<List<_Cluster>>(
+                StreamBuilder<List<ModuleCluster>>(
                   stream: _subjectsStream(),
                   builder: (context, snap) {
                     if (snap.hasError) {
@@ -1403,7 +1403,7 @@ class StudentModulesScreen extends StatefulWidget {
 class _StudentModulesScreenState extends State<StudentModulesScreen> {
   static const _navy = Color(0xFF1A237E);
 
-  late final Stream<List<_Cluster>> _clustersStream = _subjectsStream();
+  late final Stream<List<ModuleCluster>> _clustersStream = _subjectsStream();
   late final Stream<List<Subject>> _curriculumStream =
       CurriculumRepo.streamAll();
   late final Stream<QuerySnapshot> _modulesStream = FirebaseFirestore.instance
@@ -1470,7 +1470,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) setState(() => _categoryCode = null);
       },
-      child: StreamBuilder<List<_Cluster>>(
+      child: StreamBuilder<List<ModuleCluster>>(
         stream: _clustersStream,
         builder: (context, clusterSnap) => StreamBuilder<List<Subject>>(
           stream: _curriculumStream,
@@ -1489,7 +1489,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
               };
               final entries = _clean(modSnap.data!.docs, subjByCode);
 
-              _Cluster? selected;
+              ModuleCluster? selected;
               for (final c in clusters) {
                 if (c.code.toUpperCase() == _categoryCode) selected = c;
               }
@@ -1520,7 +1520,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 
   // ── Header ────────────────────────────────────────────────────────────────
 
-  Widget _header(_Cluster? selected, int count) {
+  Widget _header(ModuleCluster? selected, int count) {
     return Container(
       color: Colors.white,
       width: double.infinity,
@@ -1569,7 +1569,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 
   // ── Main page: subject categories ─────────────────────────────────────────
 
-  Widget _categories(List<_Cluster> clusters, List<_ModEntry> entries) {
+  Widget _categories(List<ModuleCluster> clusters, List<_ModEntry> entries) {
     if (clusters.isEmpty) {
       return _empty(Icons.folder_open_rounded, 'No subjects available yet.');
     }
@@ -1710,7 +1710,6 @@ class _NavCard extends StatelessWidget {
   final Color color;
   final String title;
   final String subtitle;
-  final String? tag;
   final VoidCallback onTap;
 
   const _NavCard({
@@ -1719,7 +1718,6 @@ class _NavCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
-    this.tag,
   });
 
   @override
@@ -1769,21 +1767,6 @@ class _NavCard extends StatelessWidget {
                 ],
               ),
             ),
-            if (tag != null)
-              Container(
-                margin: const EdgeInsets.only(right: 6),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(tag!,
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: color)),
-              ),
             Icon(Icons.chevron_right_rounded, color: color),
           ],
         ),
@@ -2467,7 +2450,7 @@ class _ModuleCardState extends State<_ModuleCard> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void _showSuccessDialog(
-    BuildContext context, String title, _Cluster cluster) {
+    BuildContext context, String title, ModuleCluster cluster) {
   showGeneralDialog(
     context: context,
     barrierDismissible: true,
@@ -2829,7 +2812,7 @@ class _AddSubjectSheetState extends State<AddSubjectSheet> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ManageSubjectRow extends StatelessWidget {
-  final _Cluster cluster;
+  final ModuleCluster cluster;
   final VoidCallback onEdit;
   final VoidCallback onArchive;
 
@@ -2929,7 +2912,7 @@ class ArchivedSubjectsList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<_Cluster>>(
+    return StreamBuilder<List<ModuleCluster>>(
       stream: _archivedSubjectsStream(),
       builder: (context, snap) {
         if (snap.hasError) {
@@ -2984,7 +2967,7 @@ class ArchivedSubjectsList extends StatelessWidget {
 }
 
 class _ArchivedSubjectCard extends StatelessWidget {
-  final _Cluster cluster;
+  final ModuleCluster cluster;
   final VoidCallback onRestore;
   final VoidCallback? onDeletePermanently;
 
@@ -3146,9 +3129,9 @@ class _SmallActionButton extends StatelessWidget {
 
 class _UploadModuleSheet extends StatefulWidget {
   final String teacherUid;
-  final List<_Cluster> clusters;
+  final List<ModuleCluster> clusters;
   final bool isAdmin;
-  final void Function(String title, _Cluster cluster) onSaved;
+  final void Function(String title, ModuleCluster cluster) onSaved;
 
   const _UploadModuleSheet({
     required this.teacherUid,
@@ -3166,7 +3149,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
   String? _selectedCode;
   String? _selectedSubjectCode; // curriculum subject, e.g. 'CDI 3'
-  late List<_Cluster> _clusters;
+  late List<ModuleCluster> _clusters;
   List<Subject> _curriculum = const [];
   bool _saving = false;
   bool _connecting = false;
@@ -3179,7 +3162,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
 
   /// The chosen subject, falling back to the first one if the chosen subject
   /// no longer exists (e.g. it was just archived).
-  _Cluster? get _selectedCluster {
+  ModuleCluster? get _selectedCluster {
     for (final c in _clusters) {
       if (c.code == _selectedCode) return c;
     }
@@ -3187,7 +3170,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   }
 
   /// Curriculum subjects that belong to [cluster] (e.g. CDI 1 … CDI 9).
-  List<Subject> _curriculumFor(_Cluster? cluster) {
+  List<Subject> _curriculumFor(ModuleCluster? cluster) {
     if (cluster == null) return const [];
     return _curriculum
         .where((s) => _subjectBelongsToCluster(s.code, cluster.code))
@@ -3368,7 +3351,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   }
 
   Widget _buildSubjectPicker() {
-    return StreamBuilder<List<_Cluster>>(
+    return StreamBuilder<List<ModuleCluster>>(
       stream: _subjectsStream(),
       initialData: _clusters,
       builder: (context, snap) {
