@@ -1219,10 +1219,13 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
 //
 // Opened from the admin drawer ("Manage Subjects"). Separate from Manage
 // Curriculum.
-//   Active tab   : list of module subjects with Edit + Archive buttons
+//   Active tab   : "Add Subject" button + list of module subjects with
+//                  Edit + Archive buttons
 //   Archived tab : archived subjects with Restore and Delete Permanently
-//   "Add Subject": adds a subject that instantly appears in every
-//                  instructor's Add Module subject picker.
+//   "Add Subject": an inline button at the top of the Active tab (right under
+//                  the info box, above the subject list). It adds a subject
+//                  that instantly appears in every instructor's Add Module
+//                  subject picker.
 //
 // The screen re-checks the admin role from Firestore itself (the [isAdmin]
 // constructor value is NOT trusted), so an instructor who somehow reaches it
@@ -1302,6 +1305,28 @@ class _ManageModuleSubjectsScreenState
     }
   }
 
+  // Inline "Add Subject" button, shown at the top of the Active list (and in
+  // the empty state). Full width of the content column, so it lines up with
+  // the subject cards on both desktop (max 720px) and mobile. It scrolls with
+  // the list, so it never covers the last subject.
+  Widget _addSubjectButton() => SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: () => showAddSubjectSheet(context),
+          icon: const Icon(Icons.add_rounded, size: 20),
+          label: const Text('Add Subject',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1A237E),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      );
+
   PreferredSizeWidget _plainBar() => AppBar(
         backgroundColor: const Color(0xFF1A237E),
         foregroundColor: Colors.white,
@@ -1371,15 +1396,6 @@ class _ManageModuleSubjectsScreenState
             tabs: [Tab(text: 'Active'), Tab(text: 'Archived')],
           ),
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          heroTag: 'addModuleSubject',
-          backgroundColor: const Color(0xFF1A237E),
-          foregroundColor: Colors.white,
-          icon: const Icon(Icons.add_rounded),
-          label: const Text('Add Subject',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-          onPressed: () => showAddSubjectSheet(context),
-        ),
         body: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
@@ -1402,17 +1418,28 @@ class _ManageModuleSubjectsScreenState
                     }
                     final subjects = snap.data!;
                     if (subjects.isEmpty) {
-                      return Center(
-                        child: Text(
-                          'No subjects yet.\nTap "Add Subject" to create one.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                              color: Colors.grey[500], fontSize: 14),
+                      // Keep the Add Subject button reachable even when the
+                      // list is empty.
+                      return Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'No subjects yet.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color: Colors.grey[500], fontSize: 14),
+                            ),
+                            const SizedBox(height: 14),
+                            _addSubjectButton(),
+                          ],
                         ),
                       );
                     }
                     return ListView(
-                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 96),
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
                       children: [
                         Container(
                           padding: const EdgeInsets.all(12),
@@ -1445,6 +1472,8 @@ class _ManageModuleSubjectsScreenState
                             ],
                           ),
                         ),
+                        _addSubjectButton(),
+                        const SizedBox(height: 14),
                         for (final s in subjects) ...[
                           _ManageSubjectRow(
                             cluster: s,
