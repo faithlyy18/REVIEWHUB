@@ -3688,8 +3688,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                   Expanded(
                     child: Text(
                       'Choose a file from this device to upload. It is saved '
-                      'to your Google Drive (ReviewHub Modules folder) and '
-                      'shared with students as view-only. Need to grab it '
+                      'to your Google Drive. Need to grab it '
                       'from Drive first? Use "Open Google Drive" below.',
                       style:
                           TextStyle(fontSize: 12, color: Color(0xFF1A237E)),
