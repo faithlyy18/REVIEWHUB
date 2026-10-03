@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import '../login_screen.dart';
 import 'create_quiz_screen.dart';
 import 'quiz_results_screen.dart';
@@ -1908,21 +1907,24 @@ class _QuizCard extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin Overview Tab Body (only mounted for accounts with accountType ==
 // 'admin' — see TeacherHomeScreen._isAdmin). Shows platform-wide user
-// counts and a filterable, deletable user list, while the admin keeps
+// counts and a filterable, VIEW-ONLY user list, while the admin keeps
 // full access to the same Reviews/Modules/Archive/Requests tabs as an
 // instructor.
 //
 // MONITORING: a Users / Reviews / Modules switcher sits below the stat
 // cards.
-//   - Users:   the original filterable/deletable account list. Tapping
-//              an instructor or admin row still opens the read-only
+//   - Users:   a filterable, view-only list of registered accounts
+//              (name, email, role). There are NO delete, edit, or other
+//              account-management actions on this page. Tapping an
+//              instructor or admin row opens the read-only
 //              _InstructorUploadsSheet for that one account.
 //   - Reviews: every quiz on the platform (from every instructor), in
 //              one read-only, uploader-labeled list.
 //   - Modules: every module on the platform, same treatment.
 // Reviews and Modules are 100% read-only — no edit/archive/delete is
 // ever rendered here. Make sure your Firestore security rules also only
-// allow a document's own createdBy/uploadedBy uid to update or delete it.
+// allow a document's own createdBy/uploadedBy uid to update or delete it,
+// and that users/{uid} cannot be deleted by other accounts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum _AdminUserFilter { all, students, instructors, admins }
@@ -1939,7 +1941,6 @@ class _AdminOverviewTabBody extends StatefulWidget {
 class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
   _AdminUserFilter _filter = _AdminUserFilter.all;
   _OverviewSection _section = _OverviewSection.users;
-  final _currentUid = FirebaseAuth.instance.currentUser?.uid;
 
   String _displayName(Map<String, dynamic> data, String fallbackEmail) {
     final name = data['name'] as String?;
@@ -1970,69 +1971,6 @@ class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => _InstructorUploadsSheet(uid: uid, name: name),
     );
-  }
-
-  Future<void> _confirmAndDelete(String uid, String name) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Remove User',
-            style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-        content: Text(
-            "This will permanently delete $name's account data. This cannot be undone."),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-
-    try {
-      // 1. Remove the Firestore profile — this we can always do directly.
-      await FirebaseFirestore.instance.collection('users').doc(uid).delete();
-
-      // 2. Remove the Firebase Auth account. Client SDKs can only delete
-      //    the *currently signed-in* user's own Auth account — deleting
-      //    someone else's requires the Admin SDK, which only runs
-      //    server-side. Deploy a callable Cloud Function named
-      //    'deleteUserAccount' (accepting { uid }) that internally calls
-      //    admin.auth().deleteUser(uid), and add the cloud_functions
-      //    package to pubspec.yaml for this call to succeed.
-      try {
-        await FirebaseFunctions.instance
-            .httpsCallable('deleteUserAccount')
-            .call({'uid': uid});
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('User removed.')));
-        }
-      } catch (_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'User data removed. Deploy the deleteUserAccount Cloud Function to also remove their login.'),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to delete user: $e')));
-      }
-    }
   }
 
   @override
@@ -2245,14 +2183,11 @@ class _AdminOverviewTabBodyState extends State<_AdminOverviewTabBody> {
                           final email = data['email'] as String? ?? '';
                           final name = _displayName(data, email);
                           final type = _accountTypeOf(data);
-                          final isSelf = uid == _currentUid;
 
                           return _AdminUserTile(
                             name: name,
                             email: email,
                             accountType: type,
-                            canDelete: !isSelf,
-                            onDelete: () => _confirmAndDelete(uid, name),
                             // Students don't upload reviews/modules, so
                             // there's nothing to monitor for them.
                             onViewUploads: type == 'student'
@@ -2395,23 +2330,18 @@ class _FilterChip extends StatelessWidget {
       );
 }
 
-// Tappable for instructor/admin rows (onViewUploads != null) to open the
-// read-only uploads monitoring sheet. The tap target wraps only the
-// avatar/name/badge area, kept as a sibling of the delete IconButton
-// rather than nesting them, so the delete tap isn't swallowed.
+// View-only user row: avatar, name, email, role badge. Instructor/admin
+// rows can be tapped to open the read-only uploads sheet. There are no
+// delete, edit, or other account-management actions here.
 class _AdminUserTile extends StatelessWidget {
   final String name;
   final String email;
   final String accountType; // 'student' | 'instructor' | 'admin'
-  final bool canDelete;
-  final VoidCallback onDelete;
   final VoidCallback? onViewUploads;
   const _AdminUserTile({
     required this.name,
     required this.email,
     required this.accountType,
-    required this.canDelete,
-    required this.onDelete,
     this.onViewUploads,
   });
 
@@ -2450,72 +2380,59 @@ class _AdminUserTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: const Color(0xFFE8EAF6)),
         ),
-        child: Row(
-          children: [
-            Expanded(
-              child: InkWell(
-                onTap: onViewUploads,
-                borderRadius: BorderRadius.circular(10),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 20,
-                      backgroundColor: _badgeColor.withOpacity(0.12),
-                      child: Icon(_avatarIcon, color: _badgeColor, size: 18),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(name,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold, fontSize: 14)),
-                          if (email.isNotEmpty)
-                            Text(email,
-                                style: TextStyle(
-                                    fontSize: 12, color: Colors.grey[600])),
-                        ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _badgeColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(_badgeLabel,
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: _badgeColor)),
-                    ),
-                    if (onViewUploads != null) ...[
-                      const SizedBox(width: 6),
-                      Icon(Icons.chevron_right_rounded,
-                          color: Colors.grey[400], size: 18),
-                    ],
-                  ],
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onViewUploads,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 20,
+                  backgroundColor: _badgeColor.withOpacity(0.12),
+                  child: Icon(_avatarIcon, color: _badgeColor, size: 18),
                 ),
-              ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 14)),
+                      if (email.isNotEmpty)
+                        Text(email,
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[600])),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _badgeColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(_badgeLabel,
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _badgeColor)),
+                ),
+                if (onViewUploads != null) ...[
+                  const SizedBox(width: 6),
+                  Icon(Icons.chevron_right_rounded,
+                      color: Colors.grey[400], size: 18),
+                ],
+              ],
             ),
-            if (canDelete) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded,
-                    color: Colors.red, size: 20),
-                onPressed: onDelete,
-                tooltip: 'Remove user',
-              ),
-            ],
-          ],
+          ),
         ),
       );
 }
