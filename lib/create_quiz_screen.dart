@@ -1289,6 +1289,12 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   final List<_QuestionData> _questions = [];
   bool _saving = false;
 
+  // Snapshot of every editable value as it was when the Edit screen opened.
+  // On "Update" we compare the current values against this; if they match,
+  // nothing is saved and the instructor sees "Nothing changed."
+  // Stays empty when creating a new review (the check only applies to edits).
+  String _initialSnapshot = '';
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   @override
@@ -1326,6 +1332,12 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
     }
 
     if (_questions.isEmpty) _questions.add(_QuestionData());
+
+    // Take the snapshot AFTER everything above is loaded, so it reflects
+    // exactly what the instructor sees when the screen first appears.
+    if (widget.isEditing) {
+      _initialSnapshot = _buildSnapshot();
+    }
   }
 
   _QuestionData _questionDataFromMap(Map<String, dynamic> map) {
@@ -1390,6 +1402,35 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // 75.0 -> "75", 87.5 -> "87.5"
   static String _formatPercent(double v) =>
       v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+
+  // ── Change detection ───────────────────────────────────────────────────────
+
+  /// Builds one comparable string out of everything the instructor can edit:
+  /// title, year level, subject (+ code and semester), time limit, passing
+  /// score, the answer-key toggle, and every question with its four options
+  /// and correct answer. Values are normalised (trimmed / parsed) so that
+  /// harmless differences like "75" vs "75.0" or extra spaces don't count as
+  /// a change.
+  String _buildSnapshot() {
+    final timeMins = _parseTimeLimit(_timeLimitController.text);
+    final passing = _parsePassingScore(_passingScoreController.text);
+
+    return jsonEncode({
+      'title': _titleController.text.trim(),
+      'yearLevel': _selectedYearLevel,
+      'semester': _selectedSemester,
+      'subject': _selectedSubject,
+      'subjectCode': _selectedSubjectCode,
+      'timeLimit': timeMins ?? _timeLimitController.text.trim(),
+      'passing': passing ?? _passingScoreController.text.trim(),
+      'showCorrectAnswer': _showCorrectAnswers,
+      'questions': _questions.map((q) => q.toMap()).toList(),
+    });
+  }
+
+  /// True only when editing AND nothing differs from what was loaded.
+  bool get _hasNoChanges =>
+      widget.isEditing && _buildSnapshot() == _initialSnapshot;
 
   // ── Selection handlers ─────────────────────────────────────────────────────
 
@@ -1508,6 +1549,13 @@ class _CreateQuizScreenState extends State<CreateQuizScreen> {
   // ── Save ───────────────────────────────────────────────────────────────────
 
   Future<void> _saveQuiz() async {
+    // Editing with zero changes: don't validate, don't touch Firestore —
+    // just tell the instructor nothing changed.
+    if (_hasNoChanges) {
+      _snack('Nothing changed.');
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
     if (_selectedYearLevel.isEmpty) { _snack('Please select a Year Level.', error: true); return; }
     if (_selectedSubject.isEmpty) { _snack('Please select a Subject.', error: true); return; }
