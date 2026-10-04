@@ -22,16 +22,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// All statistics (top cards + Board Exam Statistics + Subject Summary) are
 /// computed from the actual results — nothing is hardcoded.
 ///
-/// SUBJECT FILTER / SEARCH
-///   • The "All subjects" dropdown lists every subject that has results (it
-///     is built from the results themselves, so it works for every subject,
-///     including ones added later).
-///   • Typing a subject in the search box (e.g. "FORENSIC 1" or
-///     "Forensic Photography") narrows the report the same way.
-///   • The top cards, Board Exam Statistics, the Subject Summary and the
-///     results table all follow the selected subject / search text. The
-///     Subject Summary shows, per subject: students who took it, passed,
-///     failed and the pass percentage.
+/// SUBJECT FILTER (fully instructor-controlled)
+///   • The subject filter starts on "All subjects". Nothing is selected for
+///     the instructor; they decide which subject to review.
+///   • Tapping the filter opens a searchable picker listing EVERY subject
+///     found on any existing review (even with no submissions yet) plus every
+///     subject that appears in results. It is built dynamically from live
+///     data, so subjects added later show up automatically.
+///   • Typing "FORENSIC 1" (or "Forensic Photography") in the picker finds the
+///     subject, because the search also matches review titles under it.
+///   • Once a subject is chosen, the top cards, Board Exam Statistics, the
+///     Subject Summary and the results table all follow it: students who took
+///     it, passed, failed and the passing percentage.
+///   • The ✕ button in the filter resets it to "All subjects".
 ///   • Counting rule (same as the top cards): "Passed" / "Failed" count each
 ///     student's latest attempt per review, and the pass percentage is
 ///     passed ÷ (passed + failed). "Students who took it" counts unique
@@ -74,7 +77,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   late final Stream<QuerySnapshot> _quizzesStream;
   late final Stream<QuerySnapshot> _usersStream;
 
-  String? _subjectFilter; // null = all subjects
+  String? _subjectFilter; // null = all subjects (set ONLY by the instructor)
   String? _quizFilter; // null = all reviews
   _StatusFilter _status = _StatusFilter.all;
   String _search = '';
@@ -171,8 +174,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   final f = (m['firstName'] as String?)?.trim() ?? '';
                   final mid = (m['middleName'] as String?)?.trim() ?? '';
                   final l = (m['lastName'] as String?)?.trim() ?? '';
-                  final composed =
-                      l.isNotEmpty ? [f, mid, l].where((s) => s.isNotEmpty).join(' ') : '';
+                  final composed = l.isNotEmpty
+                      ? [f, mid, l].where((s) => s.isNotEmpty).join(' ')
+                      : '';
                   final full = fn.isNotEmpty
                       ? fn
                       : (composed.isNotEmpty ? composed : n);
@@ -183,19 +187,46 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
                 final all =
                     _normalise(resSnap.data!.docs, quizzes, names, years);
-                if (all.isEmpty) return _buildEmpty();
 
-                // Subject dropdown options: every subject that has results.
-                final subjectOptions = all.map((r) => r.subjectLabel).toSet().toList()
-                  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-                // If the selected subject vanished, fall back to all.
-                final activeSubject = subjectOptions.contains(_subjectFilter)
-                    ? _subjectFilter
-                    : null;
+                // Subject list: every subject on any existing review (even
+                // with no submissions yet) plus every subject that appears in
+                // results. Built from live data, nothing hardcoded.
+                final subjectMap = <String, _SubjOpt>{};
+                for (final qz in quizzes.values) {
+                  final subj = ((qz['subject'] as String?) ?? '').trim();
+                  final code = qz['subjectCode'] is String
+                      ? (qz['subjectCode'] as String).trim()
+                      : '';
+                  final parts =
+                      [code, subj].where((s) => s.isNotEmpty).toList();
+                  final key = parts.isEmpty ? 'No subject' : parts.join(' — ');
+                  final o = subjectMap.putIfAbsent(key, () => _SubjOpt(key));
+                  final t = ((qz['title'] as String?) ?? '').trim();
+                  if (t.isNotEmpty) o.reviewTitles.add(t);
+                }
+                for (final r in all) {
+                  final o = subjectMap.putIfAbsent(
+                      r.subjectLabel, () => _SubjOpt(r.subjectLabel));
+                  o.submissions++;
+                  o.reviewTitles.add(r.quizTitle);
+                }
+                final subjectOptions = subjectMap.values.toList()
+                  ..sort((a, b) =>
+                      a.label.toLowerCase().compareTo(b.label.toLowerCase()));
 
-                // Review dropdown options (only reviews that have results).
+                // Only the instructor's own choice is used; null = all.
+                // If the chosen subject vanished, fall back to all.
+                final activeSubject =
+                    subjectMap.containsKey(_subjectFilter) ? _subjectFilter : null;
+
+                if (all.isEmpty && subjectOptions.isEmpty) return _buildEmpty();
+
+                // Review dropdown: only reviews under the chosen subject.
                 final reviewOptions = <String, String>{};
                 for (final r in all) {
+                  if (activeSubject != null && r.subjectLabel != activeSubject) {
+                    continue;
+                  }
                   reviewOptions[r.quizId] = r.subject.isNotEmpty
                       ? '${r.quizTitle} — ${r.subject}'
                       : r.quizTitle;
@@ -259,6 +290,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                               _buildSubjectSummary(
                                 scoped,
                                 autoOpen: activeSubject != null || q.isNotEmpty,
+                                selected: activeSubject,
                               ),
                               _buildResultsCard(
                                 scoped: scoped,
@@ -562,7 +594,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   // ── Filters ──────────────────────────────────────────────────────────────
   Widget _buildFilters(
-    List<String> subjectOptions,
+    List<_SubjOpt> subjectOptions,
     String? activeSubject,
     Map<String, String> reviewOptions,
     String? activeQuiz,
@@ -583,26 +615,34 @@ class _ReportsScreenState extends State<ReportsScreen> {
     const ddIcon = Icon(Icons.keyboard_arrow_down_rounded,
         size: 18, color: Color(0xFF3949AB));
 
-    // Subject filter — one entry per subject that has results.
-    final subjectDropdown = box(
-      DropdownButtonHideUnderline(
-        child: DropdownButton<String?>(
-          isExpanded: true,
-          value: activeSubject,
-          icon: ddIcon,
-          style: ddStyle,
-          onChanged: (v) => setState(() => _subjectFilter = v),
-          items: [
-            const DropdownMenuItem<String?>(
-                value: null, child: Text('All subjects')),
-            for (final s in subjectOptions)
-              DropdownMenuItem<String?>(
-                value: s,
-                child: Text(s, overflow: TextOverflow.ellipsis),
-              ),
-          ],
+    // Subject filter — searchable picker. The instructor chooses; nothing is
+    // pre-selected. Tap to open, ✕ to reset to "All subjects".
+    final subjectDropdown = InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => _pickSubject(subjectOptions, activeSubject),
+      child: box(Row(children: [
+        const Icon(Icons.search_rounded, size: 18, color: Color(0xFF3949AB)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            activeSubject ?? 'Search or select a subject',
+            overflow: TextOverflow.ellipsis,
+            style: activeSubject == null
+                ? const TextStyle(fontSize: 12.5, color: _muted)
+                : ddStyle,
+          ),
         ),
-      ),
+        if (activeSubject != null)
+          GestureDetector(
+            onTap: () => setState(() {
+              _subjectFilter = null;
+              _quizFilter = null;
+            }),
+            child: const Icon(Icons.close_rounded, size: 18, color: _muted),
+          )
+        else
+          ddIcon,
+      ])),
     );
 
     final dropdown = box(
@@ -674,13 +714,96 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
   }
 
+  // Searchable subject picker. Typing "FORENSIC 1" finds the subject because
+  // the search matches the subject label AND the review titles under it.
+  Future<void> _pickSubject(List<_SubjOpt> options, String? current) async {
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        var query = '';
+        return StatefulBuilder(builder: (ctx, setD) {
+          final qn = query.trim().toLowerCase();
+          final shown = options
+              .where((o) =>
+                  qn.isEmpty ||
+                  o.label.toLowerCase().contains(qn) ||
+                  o.reviewTitles.any((t) => t.toLowerCase().contains(qn)))
+              .toList();
+          return AlertDialog(
+            title: const Text('Select a subject',
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold, color: _brand)),
+            content: SizedBox(
+              width: 420,
+              height: 380,
+              child: Column(children: [
+                TextField(
+                  autofocus: true,
+                  onChanged: (v) => setD(() => query = v),
+                  decoration: InputDecoration(
+                    hintText: 'Search subject or review (e.g. FORENSIC 1)',
+                    prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                    isDense: true,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView(children: [
+                    if (qn.isEmpty)
+                      ListTile(
+                        dense: true,
+                        title: const Text('All subjects'),
+                        selected: current == null,
+                        onTap: () => Navigator.pop(ctx, ''),
+                      ),
+                    for (final o in shown)
+                      ListTile(
+                        dense: true,
+                        selected: o.label == current,
+                        title: Text(o.label),
+                        subtitle: Text(
+                          '${o.reviewTitles.join(', ')} · '
+                          '${o.submissions} submission${o.submissions == 1 ? '' : 's'}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () => Navigator.pop(ctx, o.label),
+                      ),
+                    if (shown.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Center(child: Text('No subject matches.')),
+                      ),
+                  ]),
+                ),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel')),
+            ],
+          );
+        });
+      },
+    );
+    if (picked == null) return; // dismissed: keep the current choice
+    setState(() {
+      _subjectFilter = picked.isEmpty ? null : picked;
+      _quizFilter = null; // old review may belong to another subject
+    });
+  }
+
   // ── Subject Summary ──────────────────────────────────────────────────────
   // One block per subject in the current scope: students who took it, how
   // many passed, how many failed and the pass percentage. Follows the
-  // subject dropdown, the review dropdown and the search box, so searching
-  // "FORENSIC 1" shows that subject's numbers straight away.
-  List<_SubjStat> _subjectStats(List<_Rep> rows) {
+  // subject picker, the review dropdown and the search box. If the instructor
+  // selected a subject with no submissions yet, it still shows (with zeros).
+  List<_SubjStat> _subjectStats(List<_Rep> rows, String? selected) {
     final map = <String, _SubjStat>{};
+    if (selected != null) map[selected] = _SubjStat(selected);
     for (final r in rows) {
       final s = map.putIfAbsent(r.subjectLabel, () => _SubjStat(r.subjectLabel));
       s.students.add(r.studentKey);
@@ -695,8 +818,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return list;
   }
 
-  Widget _buildSubjectSummary(List<_Rep> rows, {required bool autoOpen}) {
-    final stats = _subjectStats(rows);
+  Widget _buildSubjectSummary(List<_Rep> rows,
+      {required bool autoOpen, String? selected}) {
+    final stats = _subjectStats(rows, selected);
     if (stats.isEmpty) return const SizedBox.shrink();
     final open = autoOpen || _summaryOpen;
 
@@ -1165,7 +1289,7 @@ class _Rep {
     required this.passed,
   });
 
-  /// Name used for grouping / the subject dropdown: "CODE — Subject name"
+  /// Name used for grouping / the subject picker: "CODE — Subject name"
   /// when a code is stored, otherwise the subject name, otherwise
   /// "No subject".
   String get subjectLabel {
@@ -1181,6 +1305,14 @@ class _SubjStat {
   int passed = 0;
   int failed = 0;
   _SubjStat(this.label);
+}
+
+/// One entry in the subject picker.
+class _SubjOpt {
+  final String label;
+  final Set<String> reviewTitles = <String>{};
+  int submissions = 0;
+  _SubjOpt(this.label);
 }
 
 // ── Small widgets ────────────────────────────────────────────────────────────
