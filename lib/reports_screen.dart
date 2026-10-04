@@ -188,52 +188,81 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 final all =
                     _normalise(resSnap.data!.docs, quizzes, names, years);
 
-                // Subject list: every subject on any existing review (even
-                // with no submissions yet) plus every subject that appears in
-                // results. Built from live data, nothing hardcoded.
-                final subjectMap = <String, _SubjOpt>{};
-                for (final qz in quizzes.values) {
+                // ── Subject / review options (all from live data) ──────────
+                // Every subject AND every review on existing reviews (even
+                // with no submissions yet), plus subjects that only appear in
+                // results. Nothing is hardcoded.
+                String subjKey(Map<String, dynamic> qz) {
                   final subj = ((qz['subject'] as String?) ?? '').trim();
                   final code = qz['subjectCode'] is String
                       ? (qz['subjectCode'] as String).trim()
                       : '';
                   final parts =
                       [code, subj].where((s) => s.isNotEmpty).toList();
-                  final key = parts.isEmpty ? 'No subject' : parts.join(' — ');
-                  final o = subjectMap.putIfAbsent(key, () => _SubjOpt(key));
-                  final t = ((qz['title'] as String?) ?? '').trim();
-                  if (t.isNotEmpty) o.reviewTitles.add(t);
+                  return parts.isEmpty ? 'No subject' : parts.join(' — ');
+                }
+
+                final subjectMap = <String, _SubjOpt>{};
+                final reviewOpts = <String, _SubjOpt>{}; // quizId -> option
+                final quizSubject = <String, String>{}; // quizId -> subject
+                for (final e in quizzes.entries) {
+                  final sk = subjKey(e.value);
+                  final t = ((e.value['title'] as String?) ?? '').trim();
+                  final title = t.isEmpty ? 'Untitled Review' : t;
+                  quizSubject[e.key] = sk;
+                  final so =
+                      subjectMap.putIfAbsent(sk, () => _SubjOpt(sk, sk));
+                  so.reviewCount++;
+                  so.reviewTitles.add(title);
+                  reviewOpts[e.key] = _SubjOpt(
+                      sk == 'No subject' ? title : '$title — $sk', sk,
+                      quizId: e.key);
                 }
                 for (final r in all) {
-                  final o = subjectMap.putIfAbsent(
-                      r.subjectLabel, () => _SubjOpt(r.subjectLabel));
-                  o.submissions++;
-                  o.reviewTitles.add(r.quizTitle);
+                  final so = subjectMap.putIfAbsent(r.subjectLabel,
+                      () => _SubjOpt(r.subjectLabel, r.subjectLabel));
+                  so.submissions++;
+                  final ro = reviewOpts[r.quizId];
+                  if (ro != null) ro.submissions++;
                 }
+
+                int byLabel(_SubjOpt x, _SubjOpt y) =>
+                    x.label.toLowerCase().compareTo(y.label.toLowerCase());
                 final subjectOptions = subjectMap.values.toList()
-                  ..sort((a, b) =>
-                      a.label.toLowerCase().compareTo(b.label.toLowerCase()));
+                  ..sort(byLabel);
+                final reviewList = reviewOpts.values.toList()..sort(byLabel);
+                // Picker shows subjects first, then individual reviews.
+                final pickerOptions = <_SubjOpt>[
+                  ...subjectOptions,
+                  ...reviewList,
+                ];
 
                 // Only the instructor's own choice is used; null = all.
-                // If the chosen subject vanished, fall back to all.
+                // If the chosen subject / review vanished, fall back to all.
                 final activeSubject =
                     subjectMap.containsKey(_subjectFilter) ? _subjectFilter : null;
 
                 if (all.isEmpty && subjectOptions.isEmpty) return _buildEmpty();
 
-                // Review dropdown: only reviews under the chosen subject.
+                // Review dropdown: reviews under the chosen subject.
                 final reviewOptions = <String, String>{};
-                for (final r in all) {
-                  if (activeSubject != null && r.subjectLabel != activeSubject) {
+                for (final e in reviewOpts.entries) {
+                  if (activeSubject != null &&
+                      quizSubject[e.key] != activeSubject) {
                     continue;
                   }
-                  reviewOptions[r.quizId] = r.subject.isNotEmpty
-                      ? '${r.quizTitle} — ${r.subject}'
-                      : r.quizTitle;
+                  reviewOptions[e.key] = e.value.label;
                 }
-                // If the selected review vanished, fall back to all.
                 final activeQuiz =
                     reviewOptions.containsKey(_quizFilter) ? _quizFilter : null;
+
+                // Text shown in the filter box and above the statistics.
+                final String? selectedLabel = activeQuiz != null
+                    ? reviewOpts[activeQuiz]?.label
+                    : activeSubject;
+                // Subject to show in the Subject Summary even with 0 results.
+                final String? summarySubject = activeSubject ??
+                    (activeQuiz != null ? quizSubject[activeQuiz] : null);
 
                 final q = _search.trim().toLowerCase();
                 // Scope = subject filter + review filter + search. Stats use
@@ -282,15 +311,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                             children: [
                               _buildStats(scoped, narrow: w < 560),
                               const SizedBox(height: 12),
-                              _buildBoardExamStats(scoped),
+                              _buildBoardExamStats(scoped, scopeLabel: selectedLabel),
                               const SizedBox(height: 12),
-                              _buildFilters(subjectOptions, activeSubject,
-                                  reviewOptions, activeQuiz),
+                              _buildFilters(pickerOptions, activeSubject,
+                                  reviewOptions, activeQuiz, selectedLabel),
                               const SizedBox(height: 12),
                               _buildSubjectSummary(
                                 scoped,
-                                autoOpen: activeSubject != null || q.isNotEmpty,
-                                selected: activeSubject,
+                                autoOpen: selectedLabel != null || q.isNotEmpty,
+                                selected: summarySubject,
                               ),
                               _buildResultsCard(
                                 scoped: scoped,
@@ -458,14 +487,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
         icon: Icons.check_circle_outline_rounded,
         label: 'Passed',
         value: '$passed',
-        sub: '${_pct(passPct)}%',
+        sub: '${_pct(passPct)}% passing rate',
         color: _green,
       ),
       _StatTile(
         icon: Icons.cancel_outlined,
         label: 'Failed',
         value: '$failed',
-        sub: '${_pct(failPct)}%',
+        sub: '${_pct(failPct)}% failed',
         color: _red,
       ),
       _StatTile(
@@ -505,7 +534,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   // ── Board Exam Statistics ────────────────────────────────────────────────
   // Overall passing / failing percentage, calculated from the actual
   // results currently in scope (e.g. 3 passed + 1 failed = 75% / 25%).
-  Widget _buildBoardExamStats(List<_Rep> rows) {
+  Widget _buildBoardExamStats(List<_Rep> rows, {String? scopeLabel}) {
     final total = rows.length;
     final passed = rows.where((r) => r.passed).length;
     final failed = total - passed;
@@ -563,6 +592,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
             const Text('Board Exam Statistics',
                 style: TextStyle(
                     fontWeight: FontWeight.bold, fontSize: 14, color: _brand)),
+            if (scopeLabel != null) ...[
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text('· $scopeLabel',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12.5,
+                        color: Color(0xFF3949AB))),
+              ),
+            ],
             const Spacer(),
             Text('$total submission${total == 1 ? '' : 's'}',
                 style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
@@ -598,6 +639,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     String? activeSubject,
     Map<String, String> reviewOptions,
     String? activeQuiz,
+    String? selectedLabel,
   ) {
     Widget box(Widget child) => Container(
           height: 42,
@@ -619,20 +661,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
     // pre-selected. Tap to open, ✕ to reset to "All subjects".
     final subjectDropdown = InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: () => _pickSubject(subjectOptions, activeSubject),
+      onTap: () => _pickSubject(subjectOptions, activeSubject, activeQuiz),
       child: box(Row(children: [
         const Icon(Icons.search_rounded, size: 18, color: Color(0xFF3949AB)),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            activeSubject ?? 'Search or select a subject',
+            selectedLabel ?? 'Search or select a subject / review',
             overflow: TextOverflow.ellipsis,
-            style: activeSubject == null
+            style: selectedLabel == null
                 ? const TextStyle(fontSize: 12.5, color: _muted)
                 : ddStyle,
           ),
         ),
-        if (activeSubject != null)
+        if (selectedLabel != null)
           GestureDetector(
             onTap: () => setState(() {
               _subjectFilter = null;
@@ -714,9 +756,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
   }
 
-  // Searchable subject picker. Typing "FORENSIC 1" finds the subject because
-  // the search matches the subject label AND the review titles under it.
-  Future<void> _pickSubject(List<_SubjOpt> options, String? current) async {
+  // Searchable picker. Lists every subject and every review (e.g. "FORENSIC 1").
+  // Choosing one automatically scopes ALL statistics and the table to it.
+  Future<void> _pickSubject(
+      List<_SubjOpt> options, String? currentSubject, String? currentQuiz) async {
     final picked = await showDialog<String>(
       context: context,
       builder: (ctx) {
@@ -727,10 +770,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
               .where((o) =>
                   qn.isEmpty ||
                   o.label.toLowerCase().contains(qn) ||
+                  o.subjectLabel.toLowerCase().contains(qn) ||
                   o.reviewTitles.any((t) => t.toLowerCase().contains(qn)))
               .toList();
+          final nothingSelected = currentSubject == null && currentQuiz == null;
           return AlertDialog(
-            title: const Text('Select a subject',
+            title: const Text('Select a subject or review',
                 style: TextStyle(
                     fontSize: 16, fontWeight: FontWeight.bold, color: _brand)),
             content: SizedBox(
@@ -741,7 +786,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   autofocus: true,
                   onChanged: (v) => setD(() => query = v),
                   decoration: InputDecoration(
-                    hintText: 'Search subject or review (e.g. FORENSIC 1)',
+                    hintText: 'Search (e.g. FORENSIC 1)',
                     prefixIcon: const Icon(Icons.search_rounded, size: 18),
                     isDense: true,
                     border: OutlineInputBorder(
@@ -754,27 +799,39 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     if (qn.isEmpty)
                       ListTile(
                         dense: true,
+                        leading: const Icon(Icons.select_all_rounded, size: 20),
                         title: const Text('All subjects'),
-                        selected: current == null,
+                        selected: nothingSelected,
                         onTap: () => Navigator.pop(ctx, ''),
                       ),
                     for (final o in shown)
                       ListTile(
                         dense: true,
-                        selected: o.label == current,
+                        leading: Icon(
+                            o.isReview
+                                ? Icons.quiz_outlined
+                                : Icons.menu_book_rounded,
+                            size: 20),
+                        selected: o.isReview
+                            ? o.quizId == currentQuiz
+                            : (currentQuiz == null &&
+                                o.subjectLabel == currentSubject),
                         title: Text(o.label),
                         subtitle: Text(
-                          '${o.reviewTitles.join(', ')} · '
-                          '${o.submissions} submission${o.submissions == 1 ? '' : 's'}',
-                          maxLines: 2,
+                          o.isReview
+                              ? 'Review · ${o.submissions} submission${o.submissions == 1 ? '' : 's'}'
+                              : 'Subject · ${o.reviewCount} review${o.reviewCount == 1 ? '' : 's'} · '
+                                  '${o.submissions} submission${o.submissions == 1 ? '' : 's'}',
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        onTap: () => Navigator.pop(ctx, o.label),
+                        onTap: () => Navigator.pop(
+                            ctx, o.isReview ? 'q:${o.quizId}' : 's:${o.label}'),
                       ),
                     if (shown.isEmpty)
                       const Padding(
                         padding: EdgeInsets.all(20),
-                        child: Center(child: Text('No subject matches.')),
+                        child: Center(child: Text('No match.')),
                       ),
                   ]),
                 ),
@@ -791,8 +848,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
     if (picked == null) return; // dismissed: keep the current choice
     setState(() {
-      _subjectFilter = picked.isEmpty ? null : picked;
-      _quizFilter = null; // old review may belong to another subject
+      if (picked.isEmpty) {
+        _subjectFilter = null;
+        _quizFilter = null;
+      } else if (picked.startsWith('q:')) {
+        // A specific review: filter by it (subject filter stays open so the
+        // review dropdown still lists all reviews).
+        _subjectFilter = null;
+        _quizFilter = picked.substring(2);
+      } else {
+        _subjectFilter = picked.substring(2);
+        _quizFilter = null;
+      }
     });
   }
 
@@ -1307,12 +1374,18 @@ class _SubjStat {
   _SubjStat(this.label);
 }
 
-/// One entry in the subject picker.
+/// One entry in the subject / review picker.
+///  • subject entry → [quizId] is null (e.g. "Forensic Photography")
+///  • review entry  → [quizId] is set  (e.g. "FORENSIC 1 — Forensic Photography")
 class _SubjOpt {
-  final String label;
+  final String label; // text shown in the picker and in the filter box
+  final String subjectLabel; // the subject this entry belongs to
+  final String? quizId;
   final Set<String> reviewTitles = <String>{};
+  int reviewCount = 0;
   int submissions = 0;
-  _SubjOpt(this.label);
+  _SubjOpt(this.label, this.subjectLabel, {this.quizId});
+  bool get isReview => quizId != null;
 }
 
 // ── Small widgets ────────────────────────────────────────────────────────────
