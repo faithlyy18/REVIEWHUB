@@ -22,19 +22,49 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// once the student actually submits it, so a further attempt requires a
 /// brand-new request.
 ///
-/// GROUPING: pending requests are grouped by their `subject` field. Each
-/// subject section shows how many requests / students are waiting and has
-/// its own "Approve All" / "Deny All" buttons, which update every pending
-/// request in that subject with Firestore batched writes. Individual
-/// Approve / Deny buttons on each request still work.
-class RetakeRequestsTab extends StatelessWidget {
+/// GROUPING (3 levels):
+///   Category (e.g. "CDI")
+///     └─ Level / review (e.g. "CDI 1 – Fundamentals of Investigation and
+///        Intelligence")
+///          └─ Pending student requests
+///
+/// The category and level come from the review's `subjectCode` (e.g.
+/// "CDI 1" → category "CDI"). Retake requests don't store `subjectCode`,
+/// so it is read from the matching `quizzes/{quizId}` document (and cached).
+/// If a request already carries a `subjectCode` field, that is used first.
+/// Requests whose review has no subject code are grouped under "Other".
+///
+/// Each level section shows how many requests / students are waiting and
+/// has its own "Approve All" / "Deny All" buttons, which update every
+/// pending request in that level with Firestore batched writes. Individual
+/// Approve / Deny buttons on each request still work. Pending counts are
+/// shown on the header, on every category, and on every level.
+class RetakeRequestsTab extends StatefulWidget {
   const RetakeRequestsTab({super.key});
 
+  @override
+  State<RetakeRequestsTab> createState() => _RetakeRequestsTabState();
+}
+
+// One level (review) inside a category.
+class _Level {
+  final String code; // e.g. "CDI 1" (may be empty)
+  final String subject; // e.g. "Fundamentals of Investigation and Intelligence"
+  final List<QueryDocumentSnapshot> docs = [];
+  _Level(this.code, this.subject);
+
+  String get title => code.isEmpty ? subject : '$code – $subject';
+}
+
+class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
   // Firestore allows 500 writes per batch; stay comfortably below it.
   static const int _batchLimit = 400;
 
-  // Label used for requests that have no `subject` value.
+  // Label used for requests that have no subject / subject code.
   static const String _noSubjectLabel = 'Other';
+
+  // quizId -> subjectCode ('' when the quiz has none or can't be read).
+  final Map<String, String> _codeCache = {};
 
   void _showSnack(BuildContext context, String message, Color color) {
     if (!context.mounted) return;
@@ -64,7 +94,7 @@ class RetakeRequestsTab extends StatelessWidget {
     }
   }
 
-  // ── Bulk: every pending request of one subject ──────────────────────────
+  // ── Bulk: every pending request of one level ────────────────────────────
   Future<void> _respondAll(
     BuildContext context,
     String subject,
@@ -145,6 +175,108 @@ class RetakeRequestsTab extends StatelessWidget {
     return '${dt.month}/${dt.day}/${dt.year}';
   }
 
+  // ── Subject-code helpers ────────────────────────────────────────────────
+  // "CDI 1" -> category "CDI", number 1. A code with no trailing number
+  // (e.g. "ETHICS") becomes its own category.
+  static final RegExp _codePattern = RegExp(r'^(.*?)[\s\-_.]*(\d+)\s*$');
+
+  String _categoryOf(String code) {
+    final c = code.trim();
+    if (c.isEmpty) return _noSubjectLabel;
+    final m = _codePattern.firstMatch(c);
+    if (m != null && m.group(1)!.trim().isNotEmpty) {
+      return m.group(1)!.trim().toUpperCase();
+    }
+    return c.toUpperCase();
+  }
+
+  int _numberOf(String code) {
+    final m = _codePattern.firstMatch(code.trim());
+    if (m == null) return 0;
+    return int.tryParse(m.group(2)!) ?? 0;
+  }
+
+  String _codeFor(QueryDocumentSnapshot d) {
+    final data = d.data() as Map<String, dynamic>;
+    final own = (data['subjectCode'] as String?)?.trim() ?? '';
+    if (own.isNotEmpty) return own;
+    final quizId = data['quizId'] as String?;
+    if (quizId == null) return '';
+    return _codeCache[quizId] ?? '';
+  }
+
+  /// Reads `subjectCode` from the quizzes collection for every quizId that
+  /// isn't cached yet. Failures are cached as '' so we never retry forever.
+  Future<void> _loadCodes(Set<String> quizIds) async {
+    await Future.wait(quizIds.map((id) async {
+      try {
+        final snap =
+            await FirebaseFirestore.instance.collection('quizzes').doc(id).get();
+        final code =
+            ((snap.data() ?? {})['subjectCode'] as String?)?.trim() ?? '';
+        _codeCache[id] = code;
+      } catch (_) {
+        _codeCache[id] = '';
+      }
+    }));
+  }
+
+  /// Category → levels. Requests inside each level are sorted oldest first;
+  /// categories are alphabetical ("Other" last); levels are sorted by their
+  /// number (CDI 1, CDI 2, ...), then by name.
+  Map<String, List<_Level>> _group(List<QueryDocumentSnapshot> docs) {
+    final byCategory = <String, Map<String, _Level>>{};
+
+    for (final d in docs) {
+      final data = d.data() as Map<String, dynamic>;
+      final code = _codeFor(d);
+      final rawSubject = (data['subject'] as String?)?.trim() ?? '';
+      final subject = rawSubject.isEmpty
+          ? ((data['quizTitle'] as String?)?.trim().isNotEmpty == true
+              ? (data['quizTitle'] as String).trim()
+              : _noSubjectLabel)
+          : rawSubject;
+
+      final category = _categoryOf(code);
+      final levelKey = '${code.toLowerCase()}|${subject.toLowerCase()}';
+      final levels = byCategory.putIfAbsent(category, () => {});
+      levels.putIfAbsent(levelKey, () => _Level(code, subject)).docs.add(d);
+    }
+
+    // Sort requests inside each level (oldest first).
+    for (final levels in byCategory.values) {
+      for (final level in levels.values) {
+        level.docs.sort((a, b) {
+          final at =
+              (a.data() as Map<String, dynamic>)['requestedAt'] as Timestamp?;
+          final bt =
+              (b.data() as Map<String, dynamic>)['requestedAt'] as Timestamp?;
+          if (at == null || bt == null) return 0;
+          return at.compareTo(bt);
+        });
+      }
+    }
+
+    final categories = byCategory.keys.toList()
+      ..sort((a, b) {
+        if (a == _noSubjectLabel) return 1;
+        if (b == _noSubjectLabel) return -1;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+
+    return {
+      for (final c in categories)
+        c: (byCategory[c]!.values.toList()
+          ..sort((a, b) {
+            final n = _numberOf(a.code).compareTo(_numberOf(b.code));
+            if (n != 0) return n;
+            final cc = a.code.toLowerCase().compareTo(b.code.toLowerCase());
+            if (cc != 0) return cc;
+            return a.subject.toLowerCase().compareTo(b.subject.toLowerCase());
+          })),
+    };
+  }
+
   // ── Header banner + live pending-count badge ────────────────────────────
   // `count` is null while the stream hasn't emitted yet (or errored), in
   // which case the badge is simply omitted rather than showing a wrong or
@@ -187,38 +319,49 @@ class RetakeRequestsTab extends StatelessWidget {
     );
   }
 
-  /// Groups pending requests by subject. Requests inside each group are
-  /// sorted oldest first; groups are sorted alphabetically with the
-  /// "Other" (no subject) group last.
-  Map<String, List<QueryDocumentSnapshot>> _groupBySubject(
-      List<QueryDocumentSnapshot> docs) {
-    final grouped = <String, List<QueryDocumentSnapshot>>{};
-    for (final d in docs) {
-      final data = d.data() as Map<String, dynamic>;
-      final raw = (data['subject'] as String?)?.trim() ?? '';
-      final key = raw.isEmpty ? _noSubjectLabel : raw;
-      grouped.putIfAbsent(key, () => []).add(d);
-    }
-
-    for (final list in grouped.values) {
-      list.sort((a, b) {
-        final at =
-            (a.data() as Map<String, dynamic>)['requestedAt'] as Timestamp?;
-        final bt =
-            (b.data() as Map<String, dynamic>)['requestedAt'] as Timestamp?;
-        if (at == null || bt == null) return 0;
-        return at.compareTo(bt); // oldest first
-      });
-    }
-
-    final keys = grouped.keys.toList()
-      ..sort((a, b) {
-        if (a == _noSubjectLabel) return 1;
-        if (b == _noSubjectLabel) return -1;
-        return a.toLowerCase().compareTo(b.toLowerCase());
-      });
-
-    return {for (final k in keys) k: grouped[k]!};
+  Widget _buildList(int totalCount, Map<String, List<_Level>> grouped) {
+    final categories = grouped.keys.toList();
+    return Column(
+      children: [
+        _buildHeader(totalCount),
+        Expanded(
+          child: totalCount == 0
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.mark_email_read_rounded,
+                          size: 56, color: Colors.grey[300]),
+                      const SizedBox(height: 12),
+                      Text('No pending requests.',
+                          style:
+                              TextStyle(color: Colors.grey[500], fontSize: 15)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(14),
+                  itemCount: categories.length,
+                  itemBuilder: (context, index) {
+                    final category = categories[index];
+                    final levels = grouped[category]!;
+                    return _CategoryGroup(
+                      // Keeps expanded/collapsed state when the
+                      // Firestore stream emits new data.
+                      key: ValueKey('cat|$category'),
+                      category: category,
+                      levels: levels,
+                      formatDate: _formatDate,
+                      onRespondOne: (doc, status) =>
+                          _respond(context, doc.reference, status),
+                      onRespondAll: (level, status) =>
+                          _respondAll(context, level.title, level.docs, status),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -285,49 +428,40 @@ class RetakeRequestsTab extends StatelessWidget {
         }
 
         final docs = (snapshot.data?.docs ?? []).toList();
-        final grouped = _groupBySubject(docs);
-        final subjects = grouped.keys.toList();
 
-        return Column(
-          children: [
-            _buildHeader(docs.length),
-            Expanded(
-              child: docs.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.mark_email_read_rounded,
-                              size: 56, color: Colors.grey[300]),
-                          const SizedBox(height: 12),
-                          Text('No pending requests.',
-                              style: TextStyle(
-                                  color: Colors.grey[500], fontSize: 15)),
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(14),
-                      itemCount: subjects.length,
-                      itemBuilder: (context, index) {
-                        final subject = subjects[index];
-                        final groupDocs = grouped[subject]!;
-                        return _SubjectGroup(
-                          // Keeps expanded/collapsed state when the
-                          // Firestore stream emits new data.
-                          key: ValueKey(subject),
-                          subject: subject,
-                          docs: groupDocs,
-                          formatDate: _formatDate,
-                          onRespondOne: (doc, status) =>
-                              _respond(context, doc.reference, status),
-                          onRespondAll: (status) =>
-                              _respondAll(context, subject, groupDocs, status),
-                        );
-                      },
-                    ),
-            ),
-          ],
+        // Quizzes whose subject code we haven't looked up yet.
+        final missing = <String>{};
+        for (final d in docs) {
+          final data = d.data() as Map<String, dynamic>;
+          final own = (data['subjectCode'] as String?)?.trim() ?? '';
+          final quizId = data['quizId'] as String?;
+          if (own.isEmpty && quizId != null && !_codeCache.containsKey(quizId)) {
+            missing.add(quizId);
+          }
+        }
+
+        if (missing.isEmpty) {
+          return _buildList(docs.length, _group(docs));
+        }
+
+        // First time we see these reviews: fetch their codes, then group.
+        return FutureBuilder<void>(
+          future: _loadCodes(missing),
+          builder: (context, codeSnap) {
+            if (codeSnap.connectionState != ConnectionState.done) {
+              return Column(
+                children: [
+                  _buildHeader(docs.length),
+                  const Expanded(
+                    child: Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF1A237E))),
+                  ),
+                ],
+              );
+            }
+            return _buildList(docs.length, _group(docs));
+          },
         );
       },
     );
@@ -335,19 +469,171 @@ class RetakeRequestsTab extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// One collapsible section per subject, with bulk Approve All / Deny All.
+// Level 1: one collapsible card per CATEGORY (e.g. "CDI").
+// Contains one _LevelGroup per review level (CDI 1, CDI 2, ...).
 // ─────────────────────────────────────────────────────────────────────────
-class _SubjectGroup extends StatefulWidget {
-  final String subject;
+class _CategoryGroup extends StatefulWidget {
+  final String category;
+  final List<_Level> levels;
+  final String Function(DateTime) formatDate;
+  final Future<void> Function(QueryDocumentSnapshot doc, String status)
+      onRespondOne;
+  final Future<void> Function(_Level level, String status) onRespondAll;
+
+  const _CategoryGroup({
+    super.key,
+    required this.category,
+    required this.levels,
+    required this.formatDate,
+    required this.onRespondOne,
+    required this.onRespondAll,
+  });
+
+  @override
+  State<_CategoryGroup> createState() => _CategoryGroupState();
+}
+
+class _CategoryGroupState extends State<_CategoryGroup> {
+  // Collapsed by default: the instructor taps a category to see its reviews.
+  bool _expanded = false;
+
+  int get _requestCount =>
+      widget.levels.fold<int>(0, (sum, l) => sum + l.docs.length);
+
+  int get _studentCount {
+    final ids = <String>{};
+    for (final level in widget.levels) {
+      for (final d in level.docs) {
+        final data = d.data() as Map<String, dynamic>;
+        ids.add((data['studentUid'] as String?) ??
+            (data['studentName'] as String?) ??
+            d.id);
+      }
+    }
+    return ids.length;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final count = _requestCount;
+    final students = _studentCount;
+    final reviews = widget.levels.length;
+    final summary = '$reviews ${reviews == 1 ? 'review' : 'reviews'}'
+        ' · $count ${count == 1 ? 'request' : 'requests'}'
+        ' · $students ${students == 1 ? 'student' : 'students'}';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      elevation: 2,
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8EAF6),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.folder_rounded,
+                        color: Color(0xFF1A237E), size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(widget.category,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                                color: Color(0xFF1A237E))),
+                        const SizedBox(height: 2),
+                        Text(summary,
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.black54)),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A237E),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '$count',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: Colors.black45,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded) ...[
+            const Divider(height: 1),
+            Container(
+              color: const Color(0xFFF7F8FC),
+              padding: const EdgeInsets.fromLTRB(10, 12, 10, 2),
+              child: Column(
+                children: [
+                  for (final level in widget.levels)
+                    _LevelGroup(
+                      key: ValueKey(
+                          'lvl|${widget.category}|${level.code}|${level.subject}'),
+                      title: level.title,
+                      docs: level.docs,
+                      formatDate: widget.formatDate,
+                      onRespondOne: widget.onRespondOne,
+                      onRespondAll: (status) =>
+                          widget.onRespondAll(level, status),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Level 2: one collapsible section per review level
+// (e.g. "CDI 1 – Fundamentals of Investigation and Intelligence"),
+// with bulk Approve All / Deny All and the individual student requests.
+// ─────────────────────────────────────────────────────────────────────────
+class _LevelGroup extends StatefulWidget {
+  final String title;
   final List<QueryDocumentSnapshot> docs;
   final String Function(DateTime) formatDate;
   final Future<void> Function(QueryDocumentSnapshot doc, String status)
       onRespondOne;
   final Future<void> Function(String status) onRespondAll;
 
-  const _SubjectGroup({
+  const _LevelGroup({
     super.key,
-    required this.subject,
+    required this.title,
     required this.docs,
     required this.formatDate,
     required this.onRespondOne,
@@ -355,11 +641,12 @@ class _SubjectGroup extends StatefulWidget {
   });
 
   @override
-  State<_SubjectGroup> createState() => _SubjectGroupState();
+  State<_LevelGroup> createState() => _LevelGroupState();
 }
 
-class _SubjectGroupState extends State<_SubjectGroup> {
-  bool _expanded = true;
+class _LevelGroupState extends State<_LevelGroup> {
+  // Collapsed by default: tap a level to see its pending student requests.
+  bool _expanded = false;
   bool _busy = false;
 
   Future<void> _bulk(String status) async {
@@ -393,39 +680,39 @@ class _SubjectGroupState extends State<_SubjectGroup> {
         ' · $students ${students == 1 ? 'student' : 'students'}';
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      elevation: 2,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 1,
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Subject header (tap to collapse/expand) ───────────────────
+          // ── Level header (tap to collapse/expand) ─────────────────────
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
+              padding: const EdgeInsets.fromLTRB(12, 12, 8, 10),
               child: Row(
                 children: [
                   Container(
-                    width: 40,
-                    height: 40,
+                    width: 36,
+                    height: 36,
                     decoration: BoxDecoration(
                       color: const Color(0xFFE8EAF6),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Icon(Icons.menu_book_rounded,
-                        color: Color(0xFF1A237E), size: 20),
+                        color: Color(0xFF1A237E), size: 18),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(widget.subject,
+                        Text(widget.title,
                             style: const TextStyle(
                                 fontWeight: FontWeight.bold,
-                                fontSize: 14,
+                                fontSize: 13.5,
                                 color: Color(0xFF1A237E))),
                         const SizedBox(height: 2),
                         Text(summary,
@@ -465,7 +752,7 @@ class _SubjectGroupState extends State<_SubjectGroup> {
           // ── Bulk actions (shown when there is more than one request) ──
           if (count > 1)
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: Row(
                 children: [
                   Expanded(
