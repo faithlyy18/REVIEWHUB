@@ -19,26 +19,27 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// New submissions appear automatically (snapshots), no refresh needed.
 ///
 /// Results are sorted from highest score to lowest score.
-/// All statistics (top cards + Board Exam Statistics + Subject Summary) are
-/// computed from the actual results — nothing is hardcoded.
+/// All statistics are computed from the actual results — nothing is
+/// hardcoded.
 ///
-/// SUBJECT FILTER (fully instructor-controlled)
-///   • The subject filter starts on "All subjects". Nothing is selected for
-///     the instructor; they decide which subject to review.
-///   • Tapping the filter opens a searchable picker listing EVERY subject
-///     found on any existing review (even with no submissions yet) plus every
-///     subject that appears in results. It is built dynamically from live
-///     data, so subjects added later show up automatically.
-///   • Typing "FORENSIC 1" (or "Forensic Photography") in the picker finds the
-///     subject, because the search also matches review titles under it.
-///   • Once a subject is chosen, the top cards, Board Exam Statistics, the
-///     Subject Summary and the results table all follow it: students who took
-///     it, passed, failed and the passing percentage.
-///   • The ✕ button in the filter resets it to "All subjects".
-///   • Counting rule (same as the top cards): "Passed" / "Failed" count each
-///     student's latest attempt per review, and the pass percentage is
-///     passed ÷ (passed + failed). "Students who took it" counts unique
-///     students.
+/// SUBJECT / REVIEW REPORT (fully instructor-controlled)
+///   • The "Reviews / Subjects" selector lists every subject found in the
+///     actual results ("CODE — Subject name"). Typing "FORENSIC 1" or
+///     "Forensic Photography" finds it; review titles are searchable too.
+///   • Nothing is selected for the instructor. Until a subject is chosen no
+///     statistics are shown (only a prompt with the available subjects).
+///   • Once a subject is chosen, ONLY that subject is shown: a dedicated
+///     statistics section (students who took it, submissions, passed, failed,
+///     pass rate, fail rate) followed by the actual students who took it
+///     (name, year level, score, percentage, date taken, status).
+///   • Changing the selection replaces everything — results of different
+///     subjects are never mixed. The "All reviews" dropdown narrows the
+///     report to one review of the chosen subject.
+///   • The search box narrows the student list only; the statistics always
+///     describe the whole selected subject / review.
+///   • Counting rule: each student's LATEST attempt per review is used, so
+///     retakes never inflate the student, passed or failed counts.
+///     Pass rate = passed ÷ submissions, fail rate = failed ÷ submissions.
 ///
 /// Pass mark: each quiz's `passingPercent` if set, otherwise
 /// [kDefaultPassingPercent] below (75, same as the other result screens).
@@ -81,11 +82,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
   String? _quizFilter; // null = all reviews
   _StatusFilter _status = _StatusFilter.all;
   String _search = '';
-
-  // Subject Summary is collapsed by default while no subject filter / search
-  // is active (so a long subject list doesn't push the results down). It opens
-  // automatically as soon as a subject is selected or something is searched.
-  bool _summaryOpen = false;
 
   @override
   void initState() {
@@ -188,104 +184,69 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 final all =
                     _normalise(resSnap.data!.docs, quizzes, names, years);
 
-                // ── Subject / review options (all from live data) ──────────
-                // Every subject AND every review on existing reviews (even
-                // with no submissions yet), plus subjects that only appear in
-                // results. Nothing is hardcoded.
-                String subjKey(Map<String, dynamic> qz) {
-                  final subj = ((qz['subject'] as String?) ?? '').trim();
-                  final code = qz['subjectCode'] is String
-                      ? (qz['subjectCode'] as String).trim()
-                      : '';
-                  final parts =
-                      [code, subj].where((s) => s.isNotEmpty).toList();
-                  return parts.isEmpty ? 'No subject' : parts.join(' — ');
-                }
+                if (all.isEmpty) return _buildEmpty();
 
+                // ── Subject options, built from the ACTUAL results ─────────
                 final subjectMap = <String, _SubjOpt>{};
-                final reviewOpts = <String, _SubjOpt>{}; // quizId -> option
-                final quizSubject = <String, String>{}; // quizId -> subject
-                for (final e in quizzes.entries) {
-                  final sk = subjKey(e.value);
-                  final t = ((e.value['title'] as String?) ?? '').trim();
-                  final title = t.isEmpty ? 'Untitled Review' : t;
-                  quizSubject[e.key] = sk;
-                  final so =
-                      subjectMap.putIfAbsent(sk, () => _SubjOpt(sk, sk));
-                  so.reviewCount++;
-                  so.reviewTitles.add(title);
-                  reviewOpts[e.key] = _SubjOpt(
-                      sk == 'No subject' ? title : '$title — $sk', sk,
-                      quizId: e.key);
-                }
                 for (final r in all) {
-                  final so = subjectMap.putIfAbsent(r.subjectLabel,
-                      () => _SubjOpt(r.subjectLabel, r.subjectLabel));
+                  final so = subjectMap.putIfAbsent(
+                      r.subjectLabel, () => _SubjOpt(r.subjectLabel));
                   so.submissions++;
-                  final ro = reviewOpts[r.quizId];
-                  if (ro != null) ro.submissions++;
+                  so.reviewTitles.add(r.quizTitle);
                 }
-
-                int byLabel(_SubjOpt x, _SubjOpt y) =>
-                    x.label.toLowerCase().compareTo(y.label.toLowerCase());
                 final subjectOptions = subjectMap.values.toList()
-                  ..sort(byLabel);
-                final reviewList = reviewOpts.values.toList()..sort(byLabel);
-                // Picker shows subjects first, then individual reviews.
-                final pickerOptions = <_SubjOpt>[
-                  ...subjectOptions,
-                  ...reviewList,
-                ];
+                  ..sort((a, b) =>
+                      a.label.toLowerCase().compareTo(b.label.toLowerCase()));
 
-                // Only the instructor's own choice is used; null = all.
-                // If the chosen subject / review vanished, fall back to all.
+                // Only the instructor's own choice is used (null = nothing
+                // chosen yet). If the chosen subject vanished, clear it.
                 final activeSubject =
                     subjectMap.containsKey(_subjectFilter) ? _subjectFilter : null;
 
-                if (all.isEmpty && subjectOptions.isEmpty) return _buildEmpty();
-
-                // Review dropdown: reviews under the chosen subject.
+                // Review dropdown: reviews under the chosen subject (or all
+                // reviews while no subject is chosen). Choosing one also
+                // selects its subject.
                 final reviewOptions = <String, String>{};
-                for (final e in reviewOpts.entries) {
-                  if (activeSubject != null &&
-                      quizSubject[e.key] != activeSubject) {
+                final reviewSubject = <String, String>{};
+                for (final r in all) {
+                  reviewSubject[r.quizId] = r.subjectLabel;
+                  if (activeSubject != null && r.subjectLabel != activeSubject) {
                     continue;
                   }
-                  reviewOptions[e.key] = e.value.label;
+                  reviewOptions[r.quizId] = r.subject.isNotEmpty
+                      ? '${r.quizTitle} — ${r.subject}'
+                      : r.quizTitle;
                 }
                 final activeQuiz =
                     reviewOptions.containsKey(_quizFilter) ? _quizFilter : null;
 
-                // Text shown in the filter box and above the statistics.
-                final String? selectedLabel = activeQuiz != null
-                    ? reviewOpts[activeQuiz]?.label
-                    : activeSubject;
-                // Subject to show in the Subject Summary even with 0 results.
-                final String? summarySubject = activeSubject ??
-                    (activeQuiz != null ? quizSubject[activeQuiz] : null);
-
                 final q = _search.trim().toLowerCase();
-                // Scope = subject filter + review filter + search. Stats use
-                // this scope so the passed/failed counts always add up to
-                // the total.
-                final scoped = all.where((r) {
-                  if (activeSubject != null && r.subjectLabel != activeSubject) {
-                    return false;
-                  }
-                  if (activeQuiz != null && r.quizId != activeQuiz) {
-                    return false;
-                  }
-                  if (q.isNotEmpty &&
-                      !r.name.toLowerCase().contains(q) &&
-                      !r.quizTitle.toLowerCase().contains(q) &&
-                      !r.subject.toLowerCase().contains(q) &&
-                      !r.subjectCode.toLowerCase().contains(q) &&
-                      !r.subjectLabel.toLowerCase().contains(q) &&
-                      !r.uploadedBy.toLowerCase().contains(q)) {
-                    return false;
-                  }
-                  return true;
-                }).toList();
+                bool matchesSearch(_Rep r) =>
+                    q.isEmpty ||
+                    r.name.toLowerCase().contains(q) ||
+                    r.quizTitle.toLowerCase().contains(q) ||
+                    r.subject.toLowerCase().contains(q) ||
+                    r.subjectCode.toLowerCase().contains(q) ||
+                    r.subjectLabel.toLowerCase().contains(q) ||
+                    r.uploadedBy.toLowerCase().contains(q);
+
+                // Results of the selected subject (and review) ONLY. The
+                // statistics always use these, never the search text.
+                final subjectRows = activeSubject == null
+                    ? const <_Rep>[]
+                    : all
+                        .where((r) =>
+                            r.subjectLabel == activeSubject &&
+                            (activeQuiz == null || r.quizId == activeQuiz))
+                        .toList();
+
+                // Student list = selected subject narrowed by the search box.
+                // (With no subject chosen, typing in the search box lists the
+                // matching results; no statistics are shown.)
+                final scoped =
+                    (activeSubject == null ? all : subjectRows)
+                        .where(matchesSearch)
+                        .toList();
 
                 final visible = scoped.where((r) {
                   switch (_status) {
@@ -300,6 +261,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
                 return LayoutBuilder(builder: (context, c) {
                   final w = c.maxWidth > _maxWidth ? _maxWidth : c.maxWidth;
+                  final useTable = w - 28 >= _tableBreakpoint;
                   return SingleChildScrollView(
                     child: Center(
                       child: ConstrainedBox(
@@ -309,23 +271,38 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              _buildStats(scoped, narrow: w < 560),
+                              _buildFilters(subjectOptions, activeSubject,
+                                  reviewOptions, activeQuiz, reviewSubject),
                               const SizedBox(height: 12),
-                              _buildBoardExamStats(scoped, scopeLabel: selectedLabel),
-                              const SizedBox(height: 12),
-                              _buildFilters(pickerOptions, activeSubject,
-                                  reviewOptions, activeQuiz, selectedLabel),
-                              const SizedBox(height: 12),
-                              _buildSubjectSummary(
-                                scoped,
-                                autoOpen: selectedLabel != null || q.isNotEmpty,
-                                selected: summarySubject,
-                              ),
-                              _buildResultsCard(
-                                scoped: scoped,
-                                visible: visible,
-                                useTable: w - 28 >= _tableBreakpoint,
-                              ),
+                              if (activeSubject == null) ...[
+                                _buildSelectPrompt(subjectOptions),
+                                if (q.isNotEmpty) ...[
+                                  const SizedBox(height: 12),
+                                  _buildResultsCard(
+                                    scoped: scoped,
+                                    visible: visible,
+                                    useTable: useTable,
+                                    title: 'Search results',
+                                  ),
+                                ],
+                              ] else ...[
+                                _buildSubjectReport(
+                                  activeSubject,
+                                  subjectRows,
+                                  reviewLabel: activeQuiz == null
+                                      ? null
+                                      : reviewOptions[activeQuiz],
+                                  narrow: w < 560,
+                                ),
+                                const SizedBox(height: 12),
+                                _buildResultsCard(
+                                  scoped: scoped,
+                                  visible: visible,
+                                  useTable: useTable,
+                                  title: 'Students who took '
+                                      '${activeQuiz == null ? activeSubject : reviewOptions[activeQuiz]}',
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -462,119 +439,112 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return rows;
   }
 
-  // ── Statistics ───────────────────────────────────────────────────────────
-  Widget _buildStats(List<_Rep> rows, {required bool narrow}) {
+  // ── Prompt shown until the instructor chooses a subject ──────────────────
+  Widget _buildSelectPrompt(List<_SubjOpt> options) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border),
+      ),
+      child: Column(children: [
+        Icon(Icons.fact_check_outlined,
+            size: 40, color: _brand.withOpacity(0.45)),
+        const SizedBox(height: 8),
+        const Text('Select a subject or review',
+            style: TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 15, color: _brand)),
+        const SizedBox(height: 4),
+        Text(
+            'Choose one above to see its statistics and the students who took it.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12.5, color: Colors.grey[600])),
+        const SizedBox(height: 14),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final o in options)
+              ActionChip(
+                backgroundColor: const Color(0xFFF5F6FB),
+                side: const BorderSide(color: Color(0xFFD0D5E8)),
+                label: Text(o.label,
+                    style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: _brand)),
+                onPressed: () => setState(() {
+                  _subjectFilter = o.label;
+                  _quizFilter = null;
+                }),
+              ),
+          ],
+        ),
+      ]),
+    );
+  }
+
+  // ── Dedicated statistics for the selected subject / review ────────────────
+  // Calculated from the actual results passed in [rows] (already limited to
+  // the selected subject, latest attempt per student per review).
+  Widget _buildSubjectReport(
+    String subject,
+    List<_Rep> rows, {
+    String? reviewLabel,
+    required bool narrow,
+  }) {
     final submissions = rows.length;
     final students = rows.map((r) => r.studentKey).toSet().length;
     final passed = rows.where((r) => r.passed).length;
     final failed = submissions - passed;
     final passPct = submissions == 0 ? 0.0 : passed / submissions * 100;
     final failPct = submissions == 0 ? 0.0 : failed / submissions * 100;
-
-    _Rep? best;
-    for (final r in rows) {
-      if (best == null || r.percent > best.percent) best = r;
-    }
+    final reviews = (rows.map((r) => r.quizTitle).toSet().toList()..sort());
 
     final tiles = <Widget>[
       _StatTile(
         icon: Icons.people_alt_outlined,
         label: 'Students Who Took',
         value: '$students',
-        sub: '$submissions submission${submissions == 1 ? '' : 's'}',
+        sub: 'unique student${students == 1 ? '' : 's'}',
+      ),
+      _StatTile(
+        icon: Icons.assignment_outlined,
+        label: 'Total Submissions',
+        value: '$submissions',
+        sub: 'latest attempt per student',
       ),
       _StatTile(
         icon: Icons.check_circle_outline_rounded,
         label: 'Passed',
         value: '$passed',
-        sub: '${_pct(passPct)}% passing rate',
+        sub: 'of $submissions',
         color: _green,
       ),
       _StatTile(
         icon: Icons.cancel_outlined,
         label: 'Failed',
         value: '$failed',
-        sub: '${_pct(failPct)}% failed',
+        sub: 'of $submissions',
         color: _red,
       ),
       _StatTile(
-        icon: Icons.emoji_events_outlined,
-        label: 'Highest Score',
-        value: best == null ? '—' : '${best.score}/${best.total}',
-        sub: best == null
-            ? 'No data'
-            : '${_pct(best.percent)}% · ${best.name}',
-        color: const Color(0xFFF9A825),
+        icon: Icons.pie_chart_outline_rounded,
+        label: 'Pass Rate',
+        value: '${_pct(passPct)}%',
+        sub: '$passed passed',
+        color: _green,
+      ),
+      _StatTile(
+        icon: Icons.trending_down_rounded,
+        label: 'Fail Rate',
+        value: '${_pct(failPct)}%',
+        sub: '$failed failed',
+        color: _red,
       ),
     ];
-
-    if (!narrow) {
-      return Row(children: [
-        for (int i = 0; i < tiles.length; i++) ...[
-          if (i > 0) const SizedBox(width: 8),
-          Expanded(child: tiles[i]),
-        ],
-      ]);
-    }
-    return Column(children: [
-      Row(children: [
-        Expanded(child: tiles[0]),
-        const SizedBox(width: 8),
-        Expanded(child: tiles[1]),
-      ]),
-      const SizedBox(height: 8),
-      Row(children: [
-        Expanded(child: tiles[2]),
-        const SizedBox(width: 8),
-        Expanded(child: tiles[3]),
-      ]),
-    ]);
-  }
-
-  // ── Board Exam Statistics ────────────────────────────────────────────────
-  // Overall passing / failing percentage, calculated from the actual
-  // results currently in scope (e.g. 3 passed + 1 failed = 75% / 25%).
-  Widget _buildBoardExamStats(List<_Rep> rows, {String? scopeLabel}) {
-    final total = rows.length;
-    final passed = rows.where((r) => r.passed).length;
-    final failed = total - passed;
-    final passPct = total == 0 ? 0.0 : passed / total * 100;
-    final failPct = total == 0 ? 0.0 : failed / total * 100;
-
-    Widget legend(String label, String value, int count, Color c) => Expanded(
-          child: Row(children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text.rich(
-                    TextSpan(children: [
-                      TextSpan(
-                          text: '$value% ',
-                          style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: c)),
-                      TextSpan(
-                          text: label,
-                          style: TextStyle(
-                              fontSize: 13, color: Colors.grey[700])),
-                    ]),
-                  ),
-                  Text('$count of $total',
-                      style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
-                ],
-              ),
-            ),
-          ]),
-        );
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -587,38 +557,52 @@ class _ReportsScreenState extends State<ReportsScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            const Icon(Icons.bar_chart_rounded, size: 16, color: _brand),
+            const Icon(Icons.menu_book_rounded, size: 16, color: _brand),
             const SizedBox(width: 6),
-            const Text('Board Exam Statistics',
-                style: TextStyle(
-                    fontWeight: FontWeight.bold, fontSize: 14, color: _brand)),
-            if (scopeLabel != null) ...[
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text('· $scopeLabel',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12.5,
-                        color: Color(0xFF3949AB))),
-              ),
-            ],
-            const Spacer(),
-            Text('$total submission${total == 1 ? '' : 's'}',
-                style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+            Expanded(
+              child: Text(subject,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: _brand)),
+            ),
           ]),
+          const SizedBox(height: 2),
+          Text(
+              reviewLabel != null
+                  ? 'Review: $reviewLabel'
+                  : 'Review${reviews.length == 1 ? '' : 's'}: ${reviews.join(', ')}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+          const SizedBox(height: 8),
+          Text(
+              '$students student${students == 1 ? '' : 's'} took it  ·  '
+              '$passed Passed | $failed Failed  ·  '
+              '${_pct(passPct)}% Pass Rate | ${_pct(failPct)}% Fail Rate',
+              style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF3949AB))),
           const SizedBox(height: 12),
-          Row(children: [
-            legend('Passed', _pct(passPct), passed, _green),
-            legend('Failed', _pct(failPct), failed, _red),
-          ]),
-          const SizedBox(height: 10),
+          LayoutBuilder(builder: (context, c) {
+            final cols = narrow ? 2 : 3;
+            const gap = 8.0;
+            final tw = (c.maxWidth - gap * (cols - 1)) / cols;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [for (final t in tiles) SizedBox(width: tw, child: t)],
+            );
+          }),
+          const SizedBox(height: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: SizedBox(
               height: 10,
-              child: total == 0
+              child: submissions == 0
                   ? Container(color: const Color(0xFFE8EAF6))
                   : Row(children: [
                       if (passed > 0)
@@ -639,7 +623,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     String? activeSubject,
     Map<String, String> reviewOptions,
     String? activeQuiz,
-    String? selectedLabel,
+    Map<String, String> reviewSubject,
   ) {
     Widget box(Widget child) => Container(
           height: 42,
@@ -661,20 +645,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
     // pre-selected. Tap to open, ✕ to reset to "All subjects".
     final subjectDropdown = InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: () => _pickSubject(subjectOptions, activeSubject, activeQuiz),
+      onTap: () => _pickSubject(subjectOptions, activeSubject),
       child: box(Row(children: [
         const Icon(Icons.search_rounded, size: 18, color: Color(0xFF3949AB)),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            selectedLabel ?? 'Search or select a subject / review',
+            activeSubject ?? 'Search or select a subject / review',
             overflow: TextOverflow.ellipsis,
-            style: selectedLabel == null
+            style: activeSubject == null
                 ? const TextStyle(fontSize: 12.5, color: _muted)
                 : ddStyle,
           ),
         ),
-        if (selectedLabel != null)
+        if (activeSubject != null)
           GestureDetector(
             onTap: () => setState(() {
               _subjectFilter = null;
@@ -694,7 +678,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
           value: activeQuiz,
           icon: ddIcon,
           style: ddStyle,
-          onChanged: (v) => setState(() => _quizFilter = v),
+          onChanged: (v) => setState(() {
+            _quizFilter = v;
+            // Choosing a review also selects the subject it belongs to.
+            if (v != null) _subjectFilter = reviewSubject[v];
+          }),
           items: [
             const DropdownMenuItem<String?>(
                 value: null, child: Text('All reviews')),
@@ -756,10 +744,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
   }
 
-  // Searchable picker. Lists every subject and every review (e.g. "FORENSIC 1").
-  // Choosing one automatically scopes ALL statistics and the table to it.
-  Future<void> _pickSubject(
-      List<_SubjOpt> options, String? currentSubject, String? currentQuiz) async {
+  // Searchable picker of the subjects found in the actual results.
+  // Typing "FORENSIC 1" or "Forensic Photography" finds the subject, because
+  // the search also matches the review titles under each subject.
+  Future<void> _pickSubject(List<_SubjOpt> options, String? current) async {
     final picked = await showDialog<String>(
       context: context,
       builder: (ctx) {
@@ -770,10 +758,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
               .where((o) =>
                   qn.isEmpty ||
                   o.label.toLowerCase().contains(qn) ||
-                  o.subjectLabel.toLowerCase().contains(qn) ||
                   o.reviewTitles.any((t) => t.toLowerCase().contains(qn)))
               .toList();
-          final nothingSelected = currentSubject == null && currentQuiz == null;
           return AlertDialog(
             title: const Text('Select a subject or review',
                 style: TextStyle(
@@ -796,37 +782,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 const SizedBox(height: 8),
                 Expanded(
                   child: ListView(children: [
-                    if (qn.isEmpty)
-                      ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.select_all_rounded, size: 20),
-                        title: const Text('All subjects'),
-                        selected: nothingSelected,
-                        onTap: () => Navigator.pop(ctx, ''),
-                      ),
                     for (final o in shown)
                       ListTile(
                         dense: true,
-                        leading: Icon(
-                            o.isReview
-                                ? Icons.quiz_outlined
-                                : Icons.menu_book_rounded,
-                            size: 20),
-                        selected: o.isReview
-                            ? o.quizId == currentQuiz
-                            : (currentQuiz == null &&
-                                o.subjectLabel == currentSubject),
+                        leading:
+                            const Icon(Icons.menu_book_rounded, size: 20),
+                        selected: o.label == current,
                         title: Text(o.label),
                         subtitle: Text(
-                          o.isReview
-                              ? 'Review · ${o.submissions} submission${o.submissions == 1 ? '' : 's'}'
-                              : 'Subject · ${o.reviewCount} review${o.reviewCount == 1 ? '' : 's'} · '
-                                  '${o.submissions} submission${o.submissions == 1 ? '' : 's'}',
-                          maxLines: 1,
+                          'Review${o.reviewTitles.length == 1 ? '' : 's'}: '
+                          '${(o.reviewTitles.toList()..sort()).join(', ')}',
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        onTap: () => Navigator.pop(
-                            ctx, o.isReview ? 'q:${o.quizId}' : 's:${o.label}'),
+                        onTap: () => Navigator.pop(ctx, o.label),
                       ),
                     if (shown.isEmpty)
                       const Padding(
@@ -848,185 +817,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
     if (picked == null) return; // dismissed: keep the current choice
     setState(() {
-      if (picked.isEmpty) {
-        _subjectFilter = null;
-        _quizFilter = null;
-      } else if (picked.startsWith('q:')) {
-        // A specific review: filter by it (subject filter stays open so the
-        // review dropdown still lists all reviews).
-        _subjectFilter = null;
-        _quizFilter = picked.substring(2);
-      } else {
-        _subjectFilter = picked.substring(2);
-        _quizFilter = null;
-      }
+      _subjectFilter = picked;
+      _quizFilter = null; // old review may belong to another subject
     });
-  }
-
-  // ── Subject Summary ──────────────────────────────────────────────────────
-  // One block per subject in the current scope: students who took it, how
-  // many passed, how many failed and the pass percentage. Follows the
-  // subject picker, the review dropdown and the search box. If the instructor
-  // selected a subject with no submissions yet, it still shows (with zeros).
-  List<_SubjStat> _subjectStats(List<_Rep> rows, String? selected) {
-    final map = <String, _SubjStat>{};
-    if (selected != null) map[selected] = _SubjStat(selected);
-    for (final r in rows) {
-      final s = map.putIfAbsent(r.subjectLabel, () => _SubjStat(r.subjectLabel));
-      s.students.add(r.studentKey);
-      if (r.passed) {
-        s.passed++;
-      } else {
-        s.failed++;
-      }
-    }
-    final list = map.values.toList()
-      ..sort((a, b) => a.label.toLowerCase().compareTo(b.label.toLowerCase()));
-    return list;
-  }
-
-  Widget _buildSubjectSummary(List<_Rep> rows,
-      {required bool autoOpen, String? selected}) {
-    final stats = _subjectStats(rows, selected);
-    if (stats.isEmpty) return const SizedBox.shrink();
-    final open = autoOpen || _summaryOpen;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: _border),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              const Icon(Icons.menu_book_rounded, size: 16, color: _brand),
-              const SizedBox(width: 6),
-              const Text('Subject Summary',
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                      color: _brand)),
-              const Spacer(),
-              Text('${stats.length} subject${stats.length == 1 ? '' : 's'}',
-                  style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
-              if (!autoOpen) ...[
-                const SizedBox(width: 6),
-                TextButton(
-                  onPressed: () => setState(() => _summaryOpen = !_summaryOpen),
-                  style: TextButton.styleFrom(
-                    foregroundColor: _brand,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 28),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  child: Text(_summaryOpen ? 'Hide' : 'Show',
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600)),
-                ),
-              ],
-            ]),
-            if (open) ...[
-              const SizedBox(height: 10),
-              for (int i = 0; i < stats.length; i++) ...[
-                if (i > 0) const SizedBox(height: 8),
-                _subjectRow(stats[i]),
-              ],
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _subjectRow(_SubjStat s) {
-    final total = s.passed + s.failed;
-    final passPct = total == 0 ? 0.0 : s.passed / total * 100;
-
-    Widget mini(String label, String value, Color c) => Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(value,
-                  style: TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold, color: c)),
-              Text(label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-            ],
-          ),
-        );
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF5F6FB),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Expanded(
-              child: Text(s.label,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13.5,
-                      color: _brand)),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8EAF6),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text('${_pct(passPct)}% pass rate',
-                  style: const TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.bold,
-                      color: _brand)),
-            ),
-          ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            mini('Students took it', '${s.students.length}', _brand),
-            mini('Passed', '${s.passed}', _green),
-            mini('Failed', '${s.failed}', _red),
-            mini('Pass rate', '${_pct(passPct)}%', _brand),
-          ]),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              height: 8,
-              child: total == 0
-                  ? Container(color: const Color(0xFFE8EAF6))
-                  : Row(children: [
-                      if (s.passed > 0)
-                        Expanded(
-                            flex: s.passed, child: Container(color: _green)),
-                      if (s.failed > 0)
-                        Expanded(
-                            flex: s.failed, child: Container(color: _red)),
-                    ]),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-              '$total submission${total == 1 ? '' : 's'} · latest attempt per student',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-        ],
-      ),
-    );
   }
 
   // ── Results list ─────────────────────────────────────────────────────────
@@ -1034,6 +827,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     required List<_Rep> scoped,
     required List<_Rep> visible,
     required bool useTable,
+    String? title,
   }) {
     final passedCount = scoped.where((r) => r.passed).length;
     final failedCount = scoped.length - passedCount;
@@ -1069,6 +863,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (title != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+              child: Row(children: [
+                const Icon(Icons.people_alt_outlined, size: 16, color: _brand),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                          color: _brand)),
+                ),
+              ]),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
             child: Row(children: [
@@ -1365,27 +1176,12 @@ class _Rep {
   }
 }
 
-/// Running totals for one subject in the Subject Summary.
-class _SubjStat {
-  final String label;
-  final Set<String> students = <String>{};
-  int passed = 0;
-  int failed = 0;
-  _SubjStat(this.label);
-}
-
-/// One entry in the subject / review picker.
-///  • subject entry → [quizId] is null (e.g. "Forensic Photography")
-///  • review entry  → [quizId] is set  (e.g. "FORENSIC 1 — Forensic Photography")
+/// One entry in the subject picker (built from the actual results).
 class _SubjOpt {
-  final String label; // text shown in the picker and in the filter box
-  final String subjectLabel; // the subject this entry belongs to
-  final String? quizId;
+  final String label; // "CODE — Subject name"
   final Set<String> reviewTitles = <String>{};
-  int reviewCount = 0;
   int submissions = 0;
-  _SubjOpt(this.label, this.subjectLabel, {this.quizId});
-  bool get isReview => quizId != null;
+  _SubjOpt(this.label);
 }
 
 // ── Small widgets ────────────────────────────────────────────────────────────
