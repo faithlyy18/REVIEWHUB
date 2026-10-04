@@ -17,6 +17,13 @@ import 'review_results_screen.dart';
 /// The summary tiles, filter counts and ranking are all computed from this
 /// de-duplicated list.
 ///
+/// FULL STUDENT NAMES
+/// The student's complete registered name (e.g. "Glen Cabreros") comes from
+/// their account in the `users` collection (looked up by the result's
+/// studentUid / studentId). The name saved on the result itself is only a
+/// fallback, because it can hold just a first name. The year level is shown
+/// under the name (saved value first, then the account's `yearLevel`).
+///
 /// LAYOUT
 /// - A compact row of four stat tiles (Submissions, Average, Highest, Lowest).
 ///   Highest/Lowest are tappable and show the names.
@@ -57,6 +64,15 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
   static const double _tableBreakpoint = 700;
 
   _ResultFilter _filter = _ResultFilter.all;
+
+  // Live `users` collection, used to show each student's full registered name.
+  late final Stream<QuerySnapshot> _usersStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _usersStream = FirebaseFirestore.instance.collection('users').snapshots();
+  }
 
   // ── Navigation ───────────────────────────────────────────────────────────
   /// Swap to the Review Results report for THIS quiz.
@@ -132,6 +148,48 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
       }
     }
     return latest.values.toList();
+  }
+
+  /// Wraps [build] with the live `users` collection so every student can be
+  /// shown with their complete registered name: uid -> full name / year level.
+  /// Full name = `fullName`, else first + middle + last, else `name`.
+  Widget _withUserNames(
+    Widget Function(Map<String, String> names, Map<String, String> years)
+        build,
+  ) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _usersStream,
+      builder: (context, userSnap) {
+        // Wait briefly for the accounts so first names don't flash before the
+        // full names arrive. (If the read is denied, hasError is true and we
+        // simply fall back to the name saved on each result.)
+        if (userSnap.connectionState == ConnectionState.waiting &&
+            !userSnap.hasData &&
+            !userSnap.hasError) {
+          return const Center(child: CircularProgressIndicator(color: _brand));
+        }
+
+        final names = <String, String>{};
+        final years = <String, String>{};
+        for (final d in userSnap.data?.docs ?? const []) {
+          final m = d.data() as Map<String, dynamic>;
+          final fn = (m['fullName'] as String?)?.trim() ?? '';
+          final n = (m['name'] as String?)?.trim() ?? '';
+          final f = (m['firstName'] as String?)?.trim() ?? '';
+          final mid = (m['middleName'] as String?)?.trim() ?? '';
+          final l = (m['lastName'] as String?)?.trim() ?? '';
+          final composed = l.isNotEmpty
+              ? [f, mid, l].where((s) => s.isNotEmpty).join(' ')
+              : '';
+          final full =
+              fn.isNotEmpty ? fn : (composed.isNotEmpty ? composed : n);
+          if (full.isNotEmpty) names[d.id] = full;
+          final y = (m['yearLevel'] as String?)?.trim() ?? '';
+          if (y.isNotEmpty) years[d.id] = y;
+        }
+        return build(names, years);
+      },
+    );
   }
 
   void _showNamesSheet({
@@ -210,8 +268,10 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
           onReviewTap: _openReviewResults,
         ),
       ),
+      // Users lookup (full names) wraps the two data streams below.
+      body: _withUserNames((names, years) =>
       // Outer stream: the quiz doc (subject + required passing %).
-      body: StreamBuilder<DocumentSnapshot>(
+      StreamBuilder<DocumentSnapshot>(
         stream: FirebaseFirestore.instance
             .collection('quizzes')
             .doc(widget.quizId)
@@ -258,9 +318,24 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                     ((m['quizTitle'] as String?)?.trim().isNotEmpty ?? false)
                         ? (m['quizTitle'] as String).trim()
                         : widget.quizTitle;
+
+                // Full registered name: the student's account (users) is the
+                // source of truth; the name saved on the result may be only a
+                // first name, so it is used only when no account is found.
+                final uid =
+                    ((m['studentUid'] ?? m['studentId']) as String?) ?? '';
+                final savedName = ((m['studentName'] as String?) ?? '').trim();
+                var name = names[uid] ?? '';
+                if (name.isEmpty) name = savedName;
+                if (name.isEmpty || name.toLowerCase() == 'unknown student') {
+                  name = 'Unknown Student';
+                }
+                var year = ((m['yearLevel'] as String?) ?? '').trim();
+                if (year.isEmpty) year = years[uid] ?? '';
+
                 return _Row(
-                  name: (m['studentName'] as String?) ?? 'Unknown Student',
-                  year: (m['yearLevel'] as String?) ?? '',
+                  name: name,
+                  year: year,
                   subject: subject,
                   quizTitle: title,
                   score: score,
@@ -357,7 +432,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
             },
           );
         },
-      ),
+      )),
     );
   }
 
@@ -579,7 +654,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(rows[i].name,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontWeight: FontWeight.w600, fontSize: 13)),
@@ -655,7 +730,7 @@ class _QuizResultsScreenState extends State<QuizResultsScreen> {
                       rows[i].year.isEmpty
                           ? rows[i].name
                           : '${rows[i].name} · ${rows[i].year}',
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           fontWeight: FontWeight.w600, fontSize: 13.5)),
