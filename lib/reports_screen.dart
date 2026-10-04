@@ -32,6 +32,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 ///     results table all follow the selected subject / search text. The
 ///     Subject Summary shows, per subject: students who took it, passed,
 ///     failed and the pass percentage.
+///   • The subject dropdown and the review dropdown are SYNCHRONIZED:
+///     choosing a subject auto-selects its review (or "All reviews" when the
+///     subject has several), and choosing a review auto-selects its subject.
+///     The instructor only has to choose once; the two can never contradict
+///     each other.
 ///   • Counting rule (same as the top cards): "Passed" / "Failed" count each
 ///     student's latest attempt per review, and the pass percentage is
 ///     passed ÷ (passed + failed). "Students who took it" counts unique
@@ -116,6 +121,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
   String _pct(double v) =>
       v % 1 == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
 
+  // Label shown in the review dropdown. It always carries the subject label
+  // (e.g. "CDI 1 — Fundamentals ...") so it visibly matches the subject
+  // dropdown when the two are synchronized.
+  String _reviewLabel(_Rep r) {
+    final sl = r.subjectLabel;
+    if (sl == 'No subject') return r.quizTitle;
+    if (sl.toLowerCase().startsWith(r.quizTitle.toLowerCase())) return sl;
+    return '${r.quizTitle} · $sl';
+  }
+
   // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
@@ -188,31 +203,48 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 // Subject dropdown options: every subject that has results.
                 final subjectOptions = all.map((r) => r.subjectLabel).toSet().toList()
                   ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-                // If the selected subject vanished, fall back to all.
-                final activeSubject = subjectOptions.contains(_subjectFilter)
-                    ? _subjectFilter
-                    : null;
 
-                // Review dropdown options (only reviews that have results).
-                final reviewOptions = <String, String>{};
+                // Every review that has results: its label and the subject it
+                // belongs to.
+                final allReviewLabels = <String, String>{};
+                final reviewSubject = <String, String>{};
                 for (final r in all) {
-                  reviewOptions[r.quizId] = r.subject.isNotEmpty
-                      ? '${r.quizTitle} — ${r.subject}'
-                      : r.quizTitle;
+                  allReviewLabels[r.quizId] = _reviewLabel(r);
+                  reviewSubject.putIfAbsent(r.quizId, () => r.subjectLabel);
                 }
-                // If the selected review vanished, fall back to all.
+
+                // The two selectors are kept in sync: a selected review always
+                // decides the subject shown, so they can never contradict each
+                // other. If the selected review / subject vanished, fall back
+                // to all.
                 final activeQuiz =
-                    reviewOptions.containsKey(_quizFilter) ? _quizFilter : null;
+                    allReviewLabels.containsKey(_quizFilter) ? _quizFilter : null;
+                final activeSubject = activeQuiz != null
+                    ? reviewSubject[activeQuiz]
+                    : (subjectOptions.contains(_subjectFilter)
+                        ? _subjectFilter
+                        : null);
+
+                // Review dropdown lists only the reviews of the chosen subject
+                // (all reviews while no subject is chosen).
+                final reviewOptions = <String, String>{
+                  for (final e in allReviewLabels.entries)
+                    if (activeSubject == null ||
+                        reviewSubject[e.key] == activeSubject)
+                      e.key: e.value,
+                };
 
                 final q = _search.trim().toLowerCase();
                 // Scope = subject filter + review filter + search. Stats use
                 // this scope so the passed/failed counts always add up to
                 // the total.
                 final scoped = all.where((r) {
-                  if (activeSubject != null && r.subjectLabel != activeSubject) {
-                    return false;
-                  }
-                  if (activeQuiz != null && r.quizId != activeQuiz) {
+                  // A chosen review decides on its own (its subject is synced
+                  // automatically); otherwise filter by the chosen subject.
+                  if (activeQuiz != null) {
+                    if (r.quizId != activeQuiz) return false;
+                  } else if (activeSubject != null &&
+                      r.subjectLabel != activeSubject) {
                     return false;
                   }
                   if (q.isNotEmpty &&
@@ -254,7 +286,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                               _buildBoardExamStats(scoped),
                               const SizedBox(height: 12),
                               _buildFilters(subjectOptions, activeSubject,
-                                  reviewOptions, activeQuiz),
+                                  reviewOptions, activeQuiz, reviewSubject),
                               const SizedBox(height: 12),
                               _buildSubjectSummary(
                                 scoped,
@@ -566,6 +598,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     String? activeSubject,
     Map<String, String> reviewOptions,
     String? activeQuiz,
+    Map<String, String> reviewSubject,
   ) {
     Widget box(Widget child) => Container(
           height: 42,
@@ -591,7 +624,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
           value: activeSubject,
           icon: ddIcon,
           style: ddStyle,
-          onChanged: (v) => setState(() => _subjectFilter = v),
+          onChanged: (v) => setState(() {
+            _subjectFilter = v;
+            if (v == null) {
+              _quizFilter = null; // "All subjects" resets both selectors
+              return;
+            }
+            // Keep the current review if it belongs to this subject.
+            if (_quizFilter != null && reviewSubject[_quizFilter] == v) return;
+            // Otherwise auto-select the subject's review (when it has just
+            // one) so the review dropdown follows; several -> "All reviews".
+            final ids = reviewSubject.entries
+                .where((e) => e.value == v)
+                .map((e) => e.key)
+                .toList();
+            _quizFilter = ids.length == 1 ? ids.first : null;
+          }),
           items: [
             const DropdownMenuItem<String?>(
                 value: null, child: Text('All subjects')),
@@ -612,7 +660,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
           value: activeQuiz,
           icon: ddIcon,
           style: ddStyle,
-          onChanged: (v) => setState(() => _quizFilter = v),
+          onChanged: (v) => setState(() {
+            _quizFilter = v;
+            // Choosing a review also selects the subject it belongs to.
+            if (v != null) _subjectFilter = reviewSubject[v];
+          }),
           items: [
             const DropdownMenuItem<String?>(
                 value: null, child: Text('All reviews')),
