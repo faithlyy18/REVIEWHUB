@@ -43,6 +43,49 @@ bool _isReviewNew(Map<String, dynamic> quiz) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DATES on review cards
+//
+//   Posted <date> : when the instructor uploaded the review (`createdAt`).
+//   Taken <date>  : when the student last submitted it (latest `submittedAt`
+//                   in `quiz_results`). Only shown once the student has taken
+//                   the review.
+//
+// ORDER: the Reviews list is shown NEWEST UPLOAD FIRST (by `createdAt`), then
+// older reviews below. A review whose `createdAt` is present but still null is
+// being saved right now, so it counts as the newest. A review with no
+// `createdAt` at all is placed last.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const List<String> _shortMonths = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+String _formatDate(DateTime dt) =>
+    '${_shortMonths[dt.month - 1]} ${dt.day}, ${dt.year}';
+
+/// When the review was uploaded, or null when it has no `createdAt`.
+DateTime? _postedAtOf(Map<String, dynamic> quiz) {
+  if (!quiz.containsKey('createdAt')) return null;
+  final raw = quiz['createdAt'];
+  if (raw == null) return DateTime.now(); // still being written = newest
+  if (raw is Timestamp) return raw.toDate();
+  if (raw is DateTime) return raw;
+  return null;
+}
+
+/// Newest upload first; reviews with no date go last.
+int _compareQuizzesNewestFirst(
+    Map<String, dynamic> a, Map<String, dynamic> b) {
+  final da = _postedAtOf(a);
+  final db = _postedAtOf(b);
+  if (da == null && db == null) return 0;
+  if (da == null) return 1;
+  if (db == null) return -1;
+  return db.compareTo(da);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Background painter — same floating text as login & teacher screens
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -541,7 +584,11 @@ class _QuizzesTab extends StatelessWidget {
                       if (isArchived) return false;
                       final quizYear = quiz['yearLevel'] as String? ?? '';
                       return _matchesYearFilter(quizYear);
-                    }).toList();
+                    }).toList()
+                      // Newest upload first, then older reviews below.
+                      ..sort((a, b) => _compareQuizzesNewestFirst(
+                          a.data() as Map<String, dynamic>,
+                          b.data() as Map<String, dynamic>));
 
                     if (quizzes.isEmpty) {
                       return Center(
@@ -589,6 +636,8 @@ class _QuizzesTab extends StatelessWidget {
                           studentYearLevel: studentYearLevel,
                           // NEW badge: 14 days from when it was posted.
                           isNew: _isReviewNew(quiz),
+                          // "Posted <date>" chip.
+                          postedAt: _postedAtOf(quiz),
                         );
                       },
                     );
@@ -1021,6 +1070,10 @@ class _QuizCard extends StatefulWidget {
   /// "NEW" badge beside the title; purely visual, changes nothing else.
   final bool isNew;
 
+  /// When the instructor uploaded the review (`createdAt`). Shown as the
+  /// "Posted <date>" chip; null (older review) hides the chip.
+  final DateTime? postedAt;
+
   const _QuizCard({
     required this.quizId,
     required this.title,
@@ -1033,6 +1086,7 @@ class _QuizCard extends StatefulWidget {
     required this.studentName,
     required this.studentYearLevel,
     this.isNew = false,
+    this.postedAt,
   });
 
   @override
@@ -1043,6 +1097,8 @@ class _QuizCardState extends State<_QuizCard> {
   bool _alreadyTaken = false;
   int? _prevScore;
   int? _prevTotal;
+  // When the student last submitted this review (latest attempt).
+  DateTime? _lastSubmittedAt;
   int _attemptCount = 0;
   // null / 'pending' / 'approved' / 'denied' / 'used'
   String? _requestStatus;
@@ -1095,6 +1151,7 @@ class _QuizCardState extends State<_QuizCard> {
 
     int? latestScore;
     int? latestTotal;
+    DateTime? latestSubmittedAt;
     if (result.docs.isNotEmpty) {
       final sorted = result.docs.toList()
         ..sort((a, b) {
@@ -1106,6 +1163,8 @@ class _QuizCardState extends State<_QuizCard> {
       final latest = sorted.first.data();
       latestScore = latest['score'] as int?;
       latestTotal = latest['totalQuestions'] as int?;
+      final submitted = latest['submittedAt'];
+      if (submitted is Timestamp) latestSubmittedAt = submitted.toDate();
     }
 
     String? status;
@@ -1123,6 +1182,7 @@ class _QuizCardState extends State<_QuizCard> {
         _alreadyTaken = result.docs.isNotEmpty;
         _prevScore = latestScore;
         _prevTotal = latestTotal;
+        _lastSubmittedAt = latestSubmittedAt;
         _requestStatus = status;
         _statusLoading = false;
       });
@@ -1385,8 +1445,16 @@ class _QuizCardState extends State<_QuizCard> {
                                 'Attempt $_attemptCount/$kMaxFreeAttempts'),
                           if (_alreadyTaken && _prevScore != null)
                             _scoreChip(),
+                          // When the student last submitted this review.
+                          if (_alreadyTaken && _lastSubmittedAt != null)
+                            _chip(Icons.event_available_rounded,
+                                'Taken ${_formatDate(_lastSubmittedAt!)}'),
                           if (_teacherName != null)
                             _chip(Icons.person_rounded, _teacherName!),
+                          // When the instructor uploaded this review.
+                          if (widget.postedAt != null)
+                            _chip(Icons.event_rounded,
+                                'Posted ${_formatDate(widget.postedAt!)}'),
                         ],
                       ),
                     ],
