@@ -43,6 +43,13 @@ import 'curriculum_repo.dart';
 // `fileType` are detected from their saved `fileName` (or the end of `fileUrl`),
 // so they get a badge too. Anything unrecognised shows a neutral "FILE" badge.
 //
+// UPLOAD DATE: every module card shows an "Uploaded <date>" chip, read from
+// the module's `uploadedAt` field (falling back to `createdAt` for very old
+// documents). Modules are listed NEWEST FIRST (most recently uploaded at the
+// top, older uploads below) on the teacher, student and per-subject screens.
+// A module with no date at all is shown without a date chip and sorted after
+// the dated ones.
+//
 // ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen navigates
 //   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
 // Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
@@ -50,7 +57,7 @@ import 'curriculum_repo.dart';
 // never creates a new category by itself: it simply joins the existing group.
 //
 // STUDENT SIDE: StudentModulesScreen navigates
-//   Year Level -> Semester -> Subject -> Modules -> Read Module
+//   Subject category -> Modules (newest first) -> Read Module
 //
 // ALL subjects (including the 7 starters: CRIM, CLJ, CDI, FORENSIC, LEA, CA,
 // ENG) can be edited and archived by the admin. Archived subjects stay in the
@@ -63,6 +70,13 @@ import 'curriculum_repo.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const String _kModuleSubjectsCol = 'moduleSubjects';
+
+/// Student module list layout.
+///   false (default): one flat list, strictly newest upload first. Each card
+///                    already shows its Year / Semester / Subject pills.
+///   true           : keep the "2nd Year • 1st Semester" group headers, with
+///                    the newest upload first INSIDE each group.
+const bool _kGroupByYearSemester = false;
 
 class ModuleCluster {
   final String id; // Firestore doc id
@@ -126,6 +140,46 @@ bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
   if (c.isEmpty) return false;
   return s.startsWith('$c ');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UPLOAD DATE helpers
+//
+// _uploadedAtOf        : when a module was uploaded (`uploadedAt`, falling
+//                        back to `createdAt`), or null when it has no date.
+//                        A document whose `uploadedAt` key exists but is still
+//                        null is a brand-new upload that is still being written
+//                        to the server, so it counts as "now" (newest).
+// _compareUploadedDesc : newest first. Modules without a date go last.
+// _formatUploadDate    : "Oct 3, 2026"
+// ─────────────────────────────────────────────────────────────────────────────
+
+const List<String> _kMonths = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+DateTime? _uploadedAtOf(Map<String, dynamic> m) {
+  if (m.containsKey('uploadedAt') && m['uploadedAt'] == null) {
+    return DateTime.now();
+  }
+  final raw = m['uploadedAt'] ?? m['createdAt'];
+  if (raw is Timestamp) return raw.toDate();
+  if (raw is DateTime) return raw;
+  return null;
+}
+
+/// Newest upload first; modules with no date sort after the dated ones.
+int _compareUploadedDesc(Map<String, dynamic> a, Map<String, dynamic> b) {
+  final da = _uploadedAtOf(a);
+  final db = _uploadedAtOf(b);
+  if (da == null && db == null) return 0;
+  if (da == null) return 1;
+  if (db == null) return -1;
+  return db.compareTo(da);
+}
+
+String _formatUploadDate(DateTime dt) =>
+    '${_kMonths[dt.month - 1]} ${dt.day}, ${dt.year}';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE TYPE helpers
@@ -783,9 +837,11 @@ class _EditSubjectDialogState extends State<_EditSubjectDialog> {
 //     (fallback: first word of its `subject`, e.g. "CDI 3" -> "CDI").
 //   • Only categories that currently have modules are listed, each with its
 //     module count. A new upload joins its existing category automatically.
-//   • Inside a category the modules are sorted numerically
+//   • Inside a category the modules are sorted by UPLOAD DATE, newest first.
+//     Modules with the same (or no) date fall back to numeric subject order
 //     (CDI 1 -> CDI 2 -> … -> CDI 10), then by title.
-//   • Every module card keeps Preview Module + Archive.
+//   • Every module card keeps Preview Module + Archive and shows its
+//     "Uploaded <date>" chip.
 //   • Subjects are NOT managed here. Instructors only pick from the existing
 //     subjects in the Add Module sheet; only the admin manages subjects
 //     (drawer > Manage Subjects).
@@ -935,7 +991,8 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   }
 
   /// CDI 1 -> CDI 2 -> … -> CDI 10 (numeric, not text order), then by the
-  /// number in the title, then A–Z.
+  /// number in the title, then A–Z. Used as the tie-breaker after the upload
+  /// date.
   static int _compareModules(Map<String, dynamic> a, Map<String, dynamic> b) {
     final subjA = (a['subject'] as String? ?? '').trim();
     final subjB = (b['subject'] as String? ?? '').trim();
@@ -948,6 +1005,12 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     if (t != 0) return t;
 
     return titleA.toLowerCase().compareTo(titleB.toLowerCase());
+  }
+
+  /// Newest upload first, then the numeric/title order above.
+  static int _compareByUpload(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final c = _compareUploadedDesc(a, b);
+    return c != 0 ? c : _compareModules(a, b);
   }
 
   /// Full name of a category, e.g. 'Criminal Detection and Investigation'.
@@ -1120,7 +1183,8 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     final color = _colorForCode(code);
     final label = _labelFor(code, clusters, items);
 
-    final sorted = [...items]..sort((a, b) => _compareModules(
+    // Newest upload first.
+    final sorted = [...items]..sort((a, b) => _compareByUpload(
         a.data() as Map<String, dynamic>, b.data() as Map<String, dynamic>));
 
     return Column(
@@ -1501,8 +1565,7 @@ class _ManageModuleSubjectsScreenState
 // ─────────────────────────────────────────────────────────────────────────────
 // StudentModulesScreen  (REDESIGNED v2)
 //
-// Flow: Subject category (CLJ, CDI, CRIM …) -> modules grouped by
-//       Year Level + Semester -> Read Module
+// Flow: Subject category (CLJ, CDI, CRIM …) -> modules -> Read Module
 //
 // Data mapping (uses existing fields, no Firestore changes):
 //   Category          = module.cluster            (e.g. 'CLJ')
@@ -1513,8 +1576,11 @@ class _ManageModuleSubjectsScreenState
 //   • Modules with no curriculum `subject` are hidden (no year/semester).
 //   • Placeholder titles like "CLJ(0)" or "()" are hidden.
 //   • Duplicates (same subject + same title) are shown once.
-//   • Inside each Year/Semester group, modules are ordered by curriculum
-//     subject, then by the first number in the title, then A–Z.
+//
+// ORDER: modules are listed by UPLOAD DATE, newest first (see
+// _kGroupByYearSemester at the top of this file for the optional
+// Year/Semester group headers). Ties fall back to curriculum subject order,
+// then the number in the title, then A–Z.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModEntry {
@@ -1579,6 +1645,8 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
     return out;
   }
 
+  /// Curriculum order: year, semester, subject order, subject code, title
+  /// number, title A–Z. Used as the tie-breaker after the upload date.
   static int _cmp(_ModEntry a, _ModEntry b) {
     final y = CurriculumRepo.yearLevels
         .indexOf(a.subject.yearLevel)
@@ -1594,6 +1662,26 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
     if (c != 0) return c;
     final n = _numIn(a.title).compareTo(_numIn(b.title));
     return n != 0 ? n : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+  }
+
+  /// Newest upload first, then curriculum order.
+  static int _cmpByUpload(_ModEntry a, _ModEntry b) {
+    final c = _compareUploadedDesc(a.data, b.data);
+    return c != 0 ? c : _cmp(a, b);
+  }
+
+  /// Only used when _kGroupByYearSemester is true: Year Level, then
+  /// Semester, then newest upload first inside each group.
+  static int _cmpGrouped(_ModEntry a, _ModEntry b) {
+    final y = CurriculumRepo.yearLevels
+        .indexOf(a.subject.yearLevel)
+        .compareTo(CurriculumRepo.yearLevels.indexOf(b.subject.yearLevel));
+    if (y != 0) return y;
+    final s = CurriculumRepo.semesters
+        .indexOf(a.subject.semester)
+        .compareTo(CurriculumRepo.semesters.indexOf(b.subject.semester));
+    if (s != 0) return s;
+    return _cmpByUpload(a, b);
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -1633,7 +1721,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
                   : (entries
                       .where((e) => e.cluster == selected!.code.toUpperCase())
                       .toList()
-                    ..sort(_cmp));
+                    ..sort(_cmpByUpload));
 
               return Column(
                 children: [
@@ -1726,7 +1814,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
     );
   }
 
-  // ── Category page: modules grouped by Year Level + Semester ──────────────
+  // ── Category page: modules, newest upload first ──────────────────────────
 
   Widget _moduleGroups(List<_ModEntry> list) {
     if (list.isEmpty) {
@@ -1741,13 +1829,20 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
       counts[groupOf(e)] = (counts[groupOf(e)] ?? 0) + 1;
     }
 
+    // Default: the list is already newest-first. With group headers on, it is
+    // re-ordered Year -> Semester -> newest first so each header appears once.
+    final ordered =
+        _kGroupByYearSemester ? ([...list]..sort(_cmpGrouped)) : list;
+
     final children = <Widget>[];
     String? current;
-    for (final e in list) {
-      final g = groupOf(e);
-      if (g != current) {
-        current = g;
-        children.add(_groupHeader(g, counts[g]!));
+    for (final e in ordered) {
+      if (_kGroupByYearSemester) {
+        final g = groupOf(e);
+        if (g != current) {
+          current = g;
+          children.add(_groupHeader(g, counts[g]!));
+        }
       }
       children.add(Padding(
         padding: const EdgeInsets.only(bottom: 12),
@@ -1916,8 +2011,9 @@ class _NavCard extends StatelessWidget {
 // Opened when a student taps a subject in the Subjects (curriculum) tab.
 // Matches modules by the curriculum subject code (module.subject == code),
 // so "CDI 1" only ever shows CDI 1 modules.
-//   • Has modules  -> Year/Semester header + pills + the usual module cards
-//                     (Read Module and the confirmation dialog unchanged).
+//   • Has modules  -> Year/Semester header + pills + the usual module cards,
+//                     newest upload first (Read Module and the confirmation
+//                     dialog unchanged).
 //   • No modules   -> "This subject has no module yet."
 //   • Back button  -> returns to the Subjects tab.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1941,7 +2037,8 @@ class _StudentSubjectModulesScreenState
       .snapshots();
 
   /// Modules of this subject only: placeholder titles removed, duplicates
-  /// merged, ordered by the first number in the title, then A–Z.
+  /// merged, ordered by upload date (newest first), then by the first number
+  /// in the title, then A–Z.
   List<Map<String, dynamic>> _mine(List<QueryDocumentSnapshot> docs) {
     final code = widget.subject.code.trim().toLowerCase();
     final seen = <String>{};
@@ -1958,6 +2055,8 @@ class _StudentSubjectModulesScreenState
       out.add(m);
     }
     out.sort((a, b) {
+      final d = _compareUploadedDesc(a, b);
+      if (d != 0) return d;
       final ta = (a['title'] as String? ?? '').trim();
       final tb = (b['title'] as String? ?? '').trim();
       final n = _StudentModulesScreenState._numIn(ta)
@@ -2140,11 +2239,12 @@ class _StudentSubjectModulesScreenState
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Module Card
 //
-// Shows the module's file-type badge (PPTX / DOCX / PDF …), its subject group
-// (e.g. CDI) and, when set, its curriculum subject (e.g. CDI 3). For STUDENTS,
-// tapping "Read Module" first shows a confirmation dialog saying which subject
-// the module belongs to; the module only opens after the student taps "Open
-// Module". Teachers preview directly.
+// Shows the module's file-type badge (PPTX / DOCX / PDF …), its upload date
+// ("Uploaded Oct 3, 2026"), its subject group (e.g. CDI) and, when set, its
+// curriculum subject (e.g. CDI 3). For STUDENTS, tapping "Read Module" first
+// shows a confirmation dialog saying which subject the module belongs to; the
+// module only opens after the student taps "Open Module". Teachers preview
+// directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModuleCard extends StatefulWidget {
@@ -2176,6 +2276,13 @@ class _ModuleCardState extends State<_ModuleCard> {
     if (raw is! Timestamp) return false;
     final age = DateTime.now().difference(raw.toDate());
     return age < const Duration(days: 30);
+  }
+
+  /// "Uploaded Oct 3, 2026", or null when the module has no upload date.
+  String? get _uploadedLabel {
+    final dt = _uploadedAtOf(widget.data);
+    if (dt == null) return null;
+    return 'Uploaded ${_formatUploadDate(dt)}';
   }
 
   @override
@@ -2376,6 +2483,7 @@ class _ModuleCardState extends State<_ModuleCard> {
     final fileUrl = widget.data['fileUrl'] as String? ?? '';
     final hasCluster = clusterCode.isNotEmpty;
     final hasSubject = subjectCode.isNotEmpty;
+    final uploadedLabel = _uploadedLabel;
     final clusterColor =
         hasCluster ? _colorForCode(clusterCode) : const Color(0xFF1A237E);
     final clusterIcon =
@@ -2449,13 +2557,19 @@ class _ModuleCardState extends State<_ModuleCard> {
                         ],
                       ),
                       const SizedBox(height: 6),
-                      // The file-type badge is ALWAYS shown (even for old
-                      // modules that have no subject info).
+                      // The file-type badge and the upload date are ALWAYS
+                      // shown (even for old modules that have no subject
+                      // info). The date chip is omitted only when the module
+                      // has no upload date at all.
                       Wrap(
                         spacing: 6,
                         runSpacing: 4,
                         children: [
                           _fileTypeBadge(widget.data),
+                          if (uploadedLabel != null)
+                            _chip(Icons.event_rounded, uploadedLabel,
+                                color: const Color(0xFF546E7A),
+                                maxWidth: 190),
                           if (hasCluster) ...[
                             _chip(clusterIcon, clusterCode,
                                 color: clusterColor),
@@ -3261,7 +3375,9 @@ class _SmallActionButton extends StatelessWidget {
 // page groups by — so a new CDI upload lands in the existing CDI category.
 //
 // The chosen file's extension is saved as `fileType` (e.g. 'pptx') and drives
-// the file-type badge on the module cards.
+// the file-type badge on the module cards. The upload time is saved as
+// `uploadedAt` (server timestamp), which drives the "Uploaded <date>" chip and
+// the newest-first ordering.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {
