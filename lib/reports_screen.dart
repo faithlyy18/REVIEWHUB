@@ -1890,12 +1890,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final summaryTable = pw.Table(
       border: pw.TableBorder.all(color: PdfColors.grey500, width: 0.5),
       columnWidths: {
-        0: const pw.FlexColumnWidth(2.4),
-        1: const pw.FlexColumnWidth(1.5),
+        0: const pw.FlexColumnWidth(2.6),
+        1: const pw.FlexColumnWidth(1.4),
         2: const pw.FlexColumnWidth(1.3),
-        3: const pw.FlexColumnWidth(1.0),
-        4: const pw.FlexColumnWidth(1.0),
-        5: const pw.FlexColumnWidth(1.1),
+        3: const pw.FlexColumnWidth(0.9),
+        4: const pw.FlexColumnWidth(0.9),
+        5: const pw.FlexColumnWidth(1.0),
         6: const pw.FlexColumnWidth(1.1),
         7: const pw.FlexColumnWidth(1.1),
       },
@@ -1926,13 +1926,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
           border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.4),
           columnWidths: {
             0: const pw.FlexColumnWidth(1.1),
-            1: const pw.FlexColumnWidth(2.4),
-            2: const pw.FlexColumnWidth(0.9),
-            3: const pw.FlexColumnWidth(3.0),
-            4: const pw.FlexColumnWidth(2.0),
-            5: const pw.FlexColumnWidth(1.0),
-            6: const pw.FlexColumnWidth(0.9),
-            7: const pw.FlexColumnWidth(1.0),
+            1: const pw.FlexColumnWidth(2.5),
+            2: const pw.FlexColumnWidth(3.0),
+            3: const pw.FlexColumnWidth(2.0),
+            4: const pw.FlexColumnWidth(0.9),
+            5: const pw.FlexColumnWidth(0.9),
+            6: const pw.FlexColumnWidth(1.1),
           },
           children: [
             pw.TableRow(
@@ -1941,7 +1940,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 for (final h in const [
                   'Time',
                   'Student',
-                  'Year',
                   'Review / Subject',
                   'Uploaded By',
                   'Score',
@@ -1954,8 +1952,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
             for (final r in d.rows)
               pw.TableRow(children: [
                 cell(_fmtTime(r.submittedAt), size: 8),
-                cell(r.name, bold: true, size: 8),
-                cell(r.year, size: 8),
+                cell(r.year.isNotEmpty ? '${r.name} (${r.year})' : r.name,
+                    bold: true, size: 8),
                 cell(
                     r.subject.isNotEmpty
                         ? '${r.quizTitle} (${r.subject})'
@@ -1991,8 +1989,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     doc.addPage(
       pw.MultiPage(
-        pageFormat: PdfPageFormat.a4.landscape,
-        margin: const pw.EdgeInsets.all(28),
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(30),
         footer: (ctx) => pw.Container(
           alignment: pw.Alignment.centerRight,
           margin: const pw.EdgeInsets.only(top: 8),
