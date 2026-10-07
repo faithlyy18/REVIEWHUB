@@ -579,6 +579,8 @@ class _QuizzesTab extends StatelessWidget {
                             (quiz['questions'] as List?)?.length ?? 0;
                         final yearLevel = quiz['yearLevel'] ?? 'All Years';
                         final subject = quiz['subject'] as String? ?? '';
+                        final subjectCode =
+                            quiz['subjectCode'] as String? ?? '';
 
                         return _QuizCard(
                           // Key by quiz id so a card keeps its own state
@@ -589,6 +591,7 @@ class _QuizzesTab extends StatelessWidget {
                           questionCount: questionCount,
                           yearLevel: yearLevel,
                           subject: subject,
+                          subjectCode: subjectCode,
                           timeLimitMinutes:
                               (quiz['timeLimitMinutes'] as num?)?.toInt(),
                           // `createdBy` = uid of the instructor who owns
@@ -1014,6 +1017,9 @@ class _QuizCard extends StatefulWidget {
   final int questionCount;
   final String yearLevel;
   final String subject;
+
+  /// The review's subject code (e.g. "FORENSIC 4"), saved as `subjectId`.
+  final String subjectCode;
   final int? timeLimitMinutes;
 
   /// uid of the instructor who owns this review (the quiz's `createdBy`).
@@ -1031,6 +1037,7 @@ class _QuizCard extends StatefulWidget {
     required this.questionCount,
     required this.yearLevel,
     required this.subject,
+    this.subjectCode = '',
     this.timeLimitMinutes,
     required this.teacherUid,
     required this.studentUid,
@@ -1059,6 +1066,7 @@ class _QuizCardState extends State<_QuizCard> {
 
   bool _statusLoading = true;
   bool _sendingRequest = false;
+  bool _healing = false;
 
   String? _teacherName;
 
@@ -1093,9 +1101,60 @@ class _QuizCardState extends State<_QuizCard> {
       setState(() {
         _requestStatus = snap.data()?['status'] as String?;
       });
+      // Keep the SAME record linked to the review owner (see below).
+      _healRequestOwner(snap);
     }, onError: (e) {
       debugPrint('retake_requests listen failed: $e');
     });
+  }
+
+  // The identifying fields of a request. Used both when the request is
+  // created and when an old request is repaired, so both always agree.
+  // The first group keeps the original field names (so older code and
+  // documents keep working); the second group is the same data under the
+  // clearer names (reviewId / reviewTitle / studentId / subjectId).
+  Map<String, dynamic> _ownerFields(String instructorId) => {
+        'instructorId': instructorId, // owner of the review (quiz.createdBy)
+        'quizId': widget.quizId,
+        'quizTitle': widget.title,
+        'studentUid': widget.studentUid,
+        'reviewId': widget.quizId,
+        'reviewTitle': widget.title,
+        'studentId': widget.studentUid,
+        'studentName': widget.studentName,
+        'studentYearLevel': widget.studentYearLevel,
+        'subject': widget.subject,
+        'subjectCode': widget.subjectCode,
+        'subjectId': widget.subjectCode.isNotEmpty
+            ? widget.subjectCode
+            : widget.subject,
+        'yearLevel': widget.yearLevel,
+      };
+
+  // THE MISMATCH FIX (student side). This card shows "Pending" by reading
+  // the request document by its id, which works even when the request has no
+  // (or the wrong) `instructorId` — but the instructor's Requests tab finds
+  // requests BY `instructorId`, so such a request was invisible to them.
+  // Whenever this card sees its own pending request without the correct
+  // owner, it repairs that same record in place (no duplicate is created).
+  Future<void> _healRequestOwner(
+      DocumentSnapshot<Map<String, dynamic>> snap) async {
+    final data = snap.data();
+    if (data == null || _healing) return;
+    if (data['status'] != 'pending') return;
+    final owner = widget.teacherUid.trim();
+    if (owner.isEmpty) return;
+    if (data['instructorId'] == owner && data['reviewId'] == widget.quizId) {
+      return; // already correct
+    }
+    _healing = true;
+    try {
+      await snap.reference.update(_ownerFields(owner));
+    } catch (e) {
+      debugPrint('retake request repair failed: $e');
+    } finally {
+      _healing = false;
+    }
   }
 
   Future<void> _loadTeacherName() async {
@@ -1287,16 +1346,10 @@ class _QuizCardState extends State<_QuizCard> {
           .collection('retake_requests')
           .doc(_requestDocId)
           .set({
-        'quizId': widget.quizId,
-        'quizTitle': widget.title,
-        'subject': widget.subject,
-        'yearLevel': widget.yearLevel,
-        'instructorId': instructorId, // owner of the review
-        'studentUid': widget.studentUid,
-        'studentName': widget.studentName,
-        'studentYearLevel': widget.studentYearLevel,
+        ..._ownerFields(instructorId),
         'attemptCount': _attemptCount,
         'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
         'requestedAt': FieldValue.serverTimestamp(),
         'respondedAt': null,
       });

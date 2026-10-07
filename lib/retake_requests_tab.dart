@@ -56,6 +56,52 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
   // quizId -> subjectCode ('' when the quiz has none or can't be read).
   final Map<String, String> _codeCache = {};
 
+  @override
+  void initState() {
+    super.initState();
+    _repairOwnedRequests();
+  }
+
+  // THE MISMATCH FIX (instructor side). The quiz's `createdBy` is the single
+  // source of truth for who owns a review. A request created before
+  // `instructorId` existed (or by an old build) can be pending on the
+  // student's screen but carries no matching `instructorId`, so the query
+  // below could not find it. Here we look at the reviews THIS instructor
+  // owns, and stamp their own uid onto any pending request for those
+  // reviews. It only ever touches requests whose quizId belongs to a review
+  // this instructor created, so other instructors' requests (e.g. another
+  // owner's CLJ 6) are never claimed. The live stream below then picks the
+  // repaired requests up automatically.
+  Future<void> _repairOwnedRequests() async {
+    final uid = _uid;
+    if (uid == null) return;
+    try {
+      final db = FirebaseFirestore.instance;
+      final owned = await db
+          .collection('quizzes')
+          .where('createdBy', isEqualTo: uid)
+          .get();
+      for (final quiz in owned.docs) {
+        final reqs = await db
+            .collection('retake_requests')
+            .where('quizId', isEqualTo: quiz.id)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        for (final r in reqs.docs) {
+          if (r.data()['instructorId'] == uid) continue;
+          await r.reference.update({
+            'instructorId': uid,
+            'reviewId': quiz.id,
+          });
+        }
+      }
+    } catch (e) {
+      // Not fatal: requests that already carry the right instructorId still
+      // load through the stream below.
+      debugPrint('retake request owner repair failed: $e');
+    }
+  }
+
   void _showSnack(BuildContext context, String message, Color color) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -811,11 +857,13 @@ class _LevelGroupState extends State<_LevelGroup> {
 
   Widget _buildRequestTile(QueryDocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    final quizTitle = data['quizTitle'] as String? ?? 'Review';
+    final quizTitle =
+        (data['reviewTitle'] ?? data['quizTitle']) as String? ?? 'Review';
     final studentName = data['studentName'] as String? ?? 'Student';
     final yearLevel = data['studentYearLevel'] as String? ?? '';
     final attemptCount = (data['attemptCount'] as num?)?.toInt() ?? 0;
-    final requestedAt = data['requestedAt'] as Timestamp?;
+    final requestedAt =
+        (data['createdAt'] ?? data['requestedAt']) as Timestamp?;
 
     final attemptsLabel =
         attemptCount <= 2 ? '$attemptCount/2' : '$attemptCount';
