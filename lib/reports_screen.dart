@@ -28,9 +28,10 @@ import 'package:printing/printing.dart';
 ///   a daily sales report:
 ///     Date | Students Who Took | Submissions | Passed | Failed |
 ///     Pass Rate | Average | Highest
-///   • Newest day first. Tap a day to open its individual records (time,
-///     student, review / subject, uploaded by, score, status). "Expand all"
-///     / "Collapse all" opens or closes every day at once.
+///   • Newest day first. Only the summary rows are shown at first. Tap a row
+///     or its View button to open THAT day's individual records (time,
+///     student, review / subject, uploaded by, score, percentage, status).
+///     Only one day is open at a time; tap Hide to close it.
 ///   • A TOTAL row at the bottom sums everything currently shown.
 ///   • Period chips: All time, Today, Last 7 days, This month, Custom range.
 ///   • The Print button prints (or saves as PDF) the daily summary, the
@@ -1076,7 +1077,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final days = _groupByDay(visible);
     final tot = _Tot.of(visible);
     final range = _activeRange();
-    final allOpen = days.isNotEmpty && days.every((d) => _openDays.contains(d.key));
 
     String statusText;
     switch (_status) {
@@ -1116,6 +1116,34 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ),
     );
 
+    final periodChips = Wrap(spacing: 6, runSpacing: 6, children: [
+      _chip('All time', _range == _RangePreset.all,
+          () => setState(() => _range = _RangePreset.all)),
+      _chip('Today', _range == _RangePreset.today,
+          () => setState(() => _range = _RangePreset.today)),
+      _chip('Last 7 days', _range == _RangePreset.week,
+          () => setState(() => _range = _RangePreset.week)),
+      _chip('This month', _range == _RangePreset.month,
+          () => setState(() => _range = _RangePreset.month)),
+      _chip(
+        _range == _RangePreset.custom && _customRange != null
+            ? _rangeLabel(_customRange)
+            : 'Custom range',
+        _range == _RangePreset.custom,
+        _pickRange,
+        icon: Icons.calendar_month_rounded,
+      ),
+    ]);
+
+    final statusChips = Wrap(spacing: 6, runSpacing: 6, children: [
+      _chip('All (${scoped.length})', _status == _StatusFilter.all,
+          () => setState(() => _status = _StatusFilter.all)),
+      _chip('Passed ($passedCount)', _status == _StatusFilter.passed,
+          () => setState(() => _status = _StatusFilter.passed)),
+      _chip('Failed ($failedCount)', _status == _StatusFilter.failed,
+          () => setState(() => _status = _StatusFilter.failed)),
+    ]);
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1128,7 +1156,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         children: [
           // Title + Print
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 12, 4),
+            padding: const EdgeInsets.fromLTRB(14, 12, 12, 2),
             child: Row(children: [
               const Icon(Icons.event_note_rounded, size: 17, color: _brand),
               const SizedBox(width: 6),
@@ -1143,79 +1171,36 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ]),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
             child: Text(
                 '${days.length} day${days.length == 1 ? '' : 's'} · '
                 '${tot.submissions} submission${tot.submissions == 1 ? '' : 's'} · '
-                'newest day first · ${_rangeLabel(range)}',
+                '${_rangeLabel(range)} · newest first',
                 style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
           ),
           const Divider(height: 1, color: _border),
 
-          // Period chips
+          // Period filter (left) and Passed / Failed filter (right)
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-            child: Wrap(spacing: 6, runSpacing: 6, children: [
-              _chip('All time', _range == _RangePreset.all,
-                  () => setState(() => _range = _RangePreset.all)),
-              _chip('Today', _range == _RangePreset.today,
-                  () => setState(() => _range = _RangePreset.today)),
-              _chip('Last 7 days', _range == _RangePreset.week,
-                  () => setState(() => _range = _RangePreset.week)),
-              _chip('This month', _range == _RangePreset.month,
-                  () => setState(() => _range = _RangePreset.month)),
-              _chip(
-                _range == _RangePreset.custom && _customRange != null
-                    ? _rangeLabel(_customRange)
-                    : 'Custom range',
-                _range == _RangePreset.custom,
-                _pickRange,
-                icon: Icons.calendar_month_rounded,
-              ),
-            ]),
-          ),
-
-          // Status chips + expand / collapse all
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 8, 10),
-            child: Row(children: [
-              Expanded(
-                child: Wrap(spacing: 6, runSpacing: 6, children: [
-                  _chip('All (${scoped.length})', _status == _StatusFilter.all,
-                      () => setState(() => _status = _StatusFilter.all)),
-                  _chip('Passed ($passedCount)',
-                      _status == _StatusFilter.passed,
-                      () => setState(() => _status = _StatusFilter.passed)),
-                  _chip('Failed ($failedCount)',
-                      _status == _StatusFilter.failed,
-                      () => setState(() => _status = _StatusFilter.failed)),
-                ]),
-              ),
-              if (days.isNotEmpty)
-                TextButton.icon(
-                  onPressed: () => setState(() {
-                    if (allOpen) {
-                      _openDays.clear();
-                    } else {
-                      _openDays.addAll(days.map((d) => d.key));
-                    }
-                  }),
-                  icon: Icon(
-                      allOpen
-                          ? Icons.unfold_less_rounded
-                          : Icons.unfold_more_rounded,
-                      size: 16),
-                  label: Text(allOpen ? 'Collapse all' : 'Expand all',
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600)),
-                  style: TextButton.styleFrom(
-                    foregroundColor: _brand,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 30),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
-            ]),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            child: LayoutBuilder(builder: (context, c) {
+              if (c.maxWidth >= 760) {
+                return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: periodChips),
+                      const SizedBox(width: 12),
+                      statusChips,
+                    ]);
+              }
+              return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    periodChips,
+                    const SizedBox(height: 8),
+                    statusChips,
+                  ]);
+            }),
           ),
           const Divider(height: 1, color: _border),
 
@@ -1236,8 +1221,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
+  // Only ONE date is open at a time. Tapping the open date closes it; tapping
+  // another date opens that one and closes the previous one.
   void _toggleDay(_Day d) => setState(() {
-        if (!_openDays.remove(d.key)) _openDays.add(d.key);
+        final wasOpen = _openDays.contains(d.key);
+        _openDays.clear();
+        if (!wasOpen) _openDays.add(d.key);
       });
 
   Widget _mini(String label, String value, Color c) => Expanded(
@@ -1246,14 +1235,39 @@ class _ReportsScreenState extends State<ReportsScreen> {
           children: [
             Text(value,
                 style: TextStyle(
-                    fontSize: 17, fontWeight: FontWeight.bold, color: c)),
+                    fontSize: 16, fontWeight: FontWeight.bold, color: c)),
             Text(label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+                style: TextStyle(fontSize: 10.5, color: Colors.grey[600])),
           ],
         ),
       );
+
+  // "View" / "Hide" button shown on every date row.
+  Widget _viewBtn(bool open) {
+    final fg = open ? Colors.white : _brand;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: open ? _brand : Colors.transparent,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: _brand.withOpacity(open ? 1 : 0.4)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(open ? 'Hide' : 'View',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: fg)),
+        const SizedBox(width: 3),
+        Icon(
+            open
+                ? Icons.keyboard_arrow_up_rounded
+                : Icons.keyboard_arrow_down_rounded,
+            size: 16,
+            color: fg),
+      ]),
+    );
+  }
 
   // ---- Wide screens: ledger table ------------------------------------------
   // Column flex values shared by the header, the day rows and the TOTAL row so
@@ -1261,11 +1275,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
   static const int _fDate = 22;
   static const int _fStudents = 14;
   static const int _fSubs = 13;
-  static const int _fPassed = 10;
-  static const int _fFailed = 10;
-  static const int _fRate = 12;
+  static const int _fPassed = 9;
+  static const int _fFailed = 9;
+  static const int _fRate = 11;
   static const int _fAvg = 12;
   static const int _fHigh = 12;
+  static const int _fView = 11;
 
   Widget _numCell(String v, int flex, {Color? color, bool bold = false}) =>
       Expanded(
@@ -1286,21 +1301,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     return Column(children: [
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        // left padding 15 = 12 + the 3px accent bar the day rows have
+        padding: const EdgeInsets.fromLTRB(15, 8, 12, 8),
         decoration: const BoxDecoration(
           color: Color(0xFFF5F6FB),
           border: Border(bottom: BorderSide(color: Color(0xFFD0D5E8))),
         ),
         child: Row(children: [
-          const SizedBox(width: 28),
           h('Date', _fDate, a: TextAlign.left),
           h('Students Who Took', _fStudents),
           h('Submissions', _fSubs),
           h('Passed', _fPassed),
           h('Failed', _fFailed),
           h('Pass Rate', _fRate),
-          h('Average', _fAvg),
-          h('Highest', _fHigh),
+          h('Average Score', _fAvg),
+          h('Highest Score', _fHigh),
+          h('Details', _fView),
         ]),
       ),
       for (final d in days) _dayRowWide(d),
@@ -1314,33 +1330,32 @@ class _ReportsScreenState extends State<ReportsScreen> {
       InkWell(
         onTap: () => _toggleDay(d),
         child: Container(
-          color: open ? const Color(0xFFF5F6FB) : Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-          child: Row(children: [
-            SizedBox(
-              width: 28,
-              child: Icon(
-                  open
-                      ? Icons.keyboard_arrow_up_rounded
-                      : Icons.keyboard_arrow_down_rounded,
-                  size: 20,
-                  color: _brand),
+          decoration: BoxDecoration(
+            color: open ? const Color(0xFFF5F6FB) : Colors.white,
+            border: Border(
+              left: BorderSide(
+                  color: open ? _brand : Colors.transparent, width: 3),
             ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(children: [
             Expanded(
               flex: _fDate,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_dayTitle(d),
+              child: Text.rich(
+                TextSpan(children: [
+                  TextSpan(
+                      text: _dayTitle(d),
                       style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 13.5,
                           color: _brand)),
                   if (_dayWeekday(d).isNotEmpty)
-                    Text(_dayWeekday(d),
+                    TextSpan(
+                        text: '   ${_dayWeekday(d)}',
                         style: const TextStyle(fontSize: 11.5, color: _muted)),
-                ],
+                ]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             _numCell('${t.students}', _fStudents, bold: true),
@@ -1351,6 +1366,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
             _numCell('${_pct(t.passRate)}%', _fRate),
             _numCell('${_pct(t.avg)}%', _fAvg),
             _numCell('${_pct(t.highest)}%', _fHigh),
+            Expanded(
+              flex: _fView,
+              child: Align(
+                alignment: Alignment.center,
+                child: _viewBtn(open),
+              ),
+            ),
           ]),
         ),
       ),
@@ -1359,115 +1381,137 @@ class _ReportsScreenState extends State<ReportsScreen> {
     ]);
   }
 
+  // Detail panel for ONE date: only built for the date that is open.
   Widget _detailWide(_Day d) {
     const hs = TextStyle(
         fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF5C6490));
-    Widget hc(String t, int f) =>
-        Expanded(flex: f, child: Text(t, style: hs));
+    Widget hc(String t, int f) => Expanded(flex: f, child: Text(t, style: hs));
 
     return Container(
-      color: const Color(0xFFFAFBFE),
-      padding: const EdgeInsets.fromLTRB(40, 6, 12, 10),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(children: [
-            hc('Time', 11),
-            hc('Student', 24),
-            hc('Review / Subject', 28),
-            hc('Uploaded By', 20),
-            hc('Score', 13),
-            hc('Status', 10),
-          ]),
+      color: const Color(0xFFF5F6FB),
+      padding: const EdgeInsets.fromLTRB(15, 0, 12, 10),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _border),
         ),
-        const Divider(height: 1, color: Color(0xFFD0D5E8)),
-        for (int i = 0; i < d.rows.length; i++) ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 7),
-            child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        clipBehavior: Clip.antiAlias,
+        child: Column(children: [
+          Container(
+            color: const Color(0xFFEEF0FA),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Row(children: [
               Expanded(
-                flex: 11,
-                child: Text(_fmtTime(d.rows[i].submittedAt),
-                    style: const TextStyle(fontSize: 12.5)),
+                child: Text('Submissions on ${_dayTitle(d)}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12.5,
+                        color: _brand)),
               ),
-              Expanded(
-                flex: 24,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(d.rows[i].name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 12.5)),
-                    if (d.rows[i].year.isNotEmpty)
-                      Text(d.rows[i].year,
-                          style:
-                              const TextStyle(fontSize: 11, color: _muted)),
-                  ],
-                ),
-              ),
-              Expanded(
-                flex: 28,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(d.rows[i].quizTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 12.5)),
-                    if (d.rows[i].subject.isNotEmpty)
-                      Text(d.rows[i].subject,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              const TextStyle(fontSize: 11, color: _muted)),
-                  ],
-                ),
-              ),
-              Expanded(
-                flex: 20,
-                child: Text(d.rows[i].uploadedBy,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: d.rows[i].uploadedBy == 'Unknown'
-                            ? _muted
-                            : const Color(0xFF2C2C2A))),
-              ),
-              Expanded(
-                flex: 13,
-                child: RichText(
-                  text: TextSpan(children: [
-                    TextSpan(
-                        text: '${d.rows[i].score}/${d.rows[i].total}',
-                        style: TextStyle(
-                            color: d.rows[i].passed ? _green : _red,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12.5)),
-                    TextSpan(
-                        text: ' · ${_pct(d.rows[i].percent)}%',
-                        style:
-                            const TextStyle(color: _muted, fontSize: 11.5)),
-                  ]),
-                ),
-              ),
-              Expanded(
-                flex: 10,
-                child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: _StatusPill(passed: d.rows[i].passed)),
-              ),
+              Text(
+                  '${d.rows.length} record${d.rows.length == 1 ? '' : 's'}',
+                  style: const TextStyle(fontSize: 11.5, color: _muted)),
             ]),
           ),
-          if (i != d.rows.length - 1)
-            const Divider(height: 1, color: _border),
-        ],
-      ]),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(children: [
+              hc('Time', 10),
+              hc('Student', 22),
+              hc('Review / Subject', 26),
+              hc('Uploaded By', 18),
+              hc('Score', 8),
+              hc('Percentage', 10),
+              hc('Status', 10),
+            ]),
+          ),
+          const Divider(height: 1, color: Color(0xFFD0D5E8)),
+          for (int i = 0; i < d.rows.length; i++) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                Expanded(
+                  flex: 10,
+                  child: Text(_fmtTime(d.rows[i].submittedAt),
+                      style: const TextStyle(fontSize: 12.5)),
+                ),
+                Expanded(
+                  flex: 22,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(d.rows[i].name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 12.5)),
+                      if (d.rows[i].year.isNotEmpty)
+                        Text(d.rows[i].year,
+                            style:
+                                const TextStyle(fontSize: 11, color: _muted)),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  flex: 26,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(d.rows[i].quizTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 12.5)),
+                      if (d.rows[i].subject.isNotEmpty)
+                        Text(d.rows[i].subject,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style:
+                                const TextStyle(fontSize: 11, color: _muted)),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  flex: 18,
+                  child: Text(d.rows[i].uploadedBy,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: d.rows[i].uploadedBy == 'Unknown'
+                              ? _muted
+                              : const Color(0xFF2C2C2A))),
+                ),
+                Expanded(
+                  flex: 8,
+                  child: Text('${d.rows[i].score}/${d.rows[i].total}',
+                      style: TextStyle(
+                          color: d.rows[i].passed ? _green : _red,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12.5)),
+                ),
+                Expanded(
+                  flex: 10,
+                  child: Text('${_pct(d.rows[i].percent)}%',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 12.5)),
+                ),
+                Expanded(
+                  flex: 10,
+                  child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _StatusPill(passed: d.rows[i].passed)),
+                ),
+              ]),
+            ),
+            if (i != d.rows.length - 1)
+              const Divider(height: 1, color: _border),
+          ],
+        ]),
+      ),
     );
   }
 
@@ -1483,129 +1527,140 @@ class _ReportsScreenState extends State<ReportsScreen> {
       InkWell(
         onTap: () => _toggleDay(d),
         child: Container(
-          color: open ? const Color(0xFFF5F6FB) : Colors.white,
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          decoration: BoxDecoration(
+            color: open ? const Color(0xFFF5F6FB) : Colors.white,
+            border: Border(
+              left: BorderSide(
+                  color: open ? _brand : Colors.transparent, width: 3),
+            ),
+          ),
+          padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(_dayTitle(d),
+                  child: Text.rich(
+                    TextSpan(children: [
+                      TextSpan(
+                          text: _dayTitle(d),
                           style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 14,
                               color: _brand)),
                       if (_dayWeekday(d).isNotEmpty)
-                        Text(_dayWeekday(d),
+                        TextSpan(
+                            text: '   ${_dayWeekday(d)}',
                             style: const TextStyle(
                                 fontSize: 11.5, color: _muted)),
-                    ],
+                    ]),
                   ),
                 ),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE8EAF6),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text('${_pct(t.passRate)}% pass rate',
-                      style: const TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.bold,
-                          color: _brand)),
-                ),
-                Icon(
-                    open
-                        ? Icons.keyboard_arrow_up_rounded
-                        : Icons.keyboard_arrow_down_rounded,
-                    size: 22,
-                    color: _brand),
+                _viewBtn(open),
               ]),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Row(children: [
-                _mini('Students took', '${t.students}', _brand),
-                _mini('Submissions', '${t.submissions}', _brand),
+                _mini('Students', '${t.students}', _brand),
+                _mini('Submitted', '${t.submissions}', _brand),
                 _mini('Passed', '${t.passed}', _green),
                 _mini('Failed', '${t.failed}', t.failed > 0 ? _red : _muted),
+                _mini('Pass rate', '${_pct(t.passRate)}%', _brand),
               ]),
-              const SizedBox(height: 6),
-              Text('Average ${_pct(t.avg)}% · Highest ${_pct(t.highest)}%',
-                  style: const TextStyle(fontSize: 11.5, color: _muted)),
+              const SizedBox(height: 4),
+              Text(
+                  'Average score ${_pct(t.avg)}% · Highest score ${_pct(t.highest)}%',
+                  style: const TextStyle(fontSize: 11, color: _muted)),
             ],
           ),
         ),
       ),
       if (open)
         Container(
-          color: const Color(0xFFFAFBFE),
-          child: Column(children: [
-            const Divider(height: 1, color: _border),
-            for (int i = 0; i < d.rows.length; i++) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
-                child: Row(children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+          color: const Color(0xFFF5F6FB),
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _border),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(children: [
+              Container(
+                width: double.infinity,
+                color: const Color(0xFFEEF0FA),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Text(
+                    'Submissions on ${_dayTitle(d)} · ${d.rows.length} record${d.rows.length == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        color: _brand)),
+              ),
+              for (int i = 0; i < d.rows.length; i++) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                              d.rows[i].year.isNotEmpty
+                                  ? '${d.rows[i].name} · ${d.rows[i].year}'
+                                  : d.rows[i].name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600, fontSize: 13)),
+                          const SizedBox(height: 2),
+                          Text(
+                              d.rows[i].subject.isNotEmpty
+                                  ? '${d.rows[i].quizTitle} — ${d.rows[i].subject}'
+                                  : d.rows[i].quizTitle,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 11.5, color: _muted)),
+                          Text(
+                              'Uploaded by ${d.rows[i].uploadedBy} · ${_fmtTime(d.rows[i].submittedAt)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 11.5, color: _muted)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text(
-                            d.rows[i].year.isNotEmpty
-                                ? '${d.rows[i].name} · ${d.rows[i].year}'
-                                : d.rows[i].name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600, fontSize: 13)),
-                        const SizedBox(height: 2),
-                        Text(
-                            d.rows[i].subject.isNotEmpty
-                                ? '${d.rows[i].quizTitle} — ${d.rows[i].subject}'
-                                : d.rows[i].quizTitle,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11.5, color: _muted)),
-                        Text(
-                            'Uploaded by ${d.rows[i].uploadedBy} · ${_fmtTime(d.rows[i].submittedAt)}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11.5, color: _muted)),
+                        RichText(
+                          text: TextSpan(children: [
+                            TextSpan(
+                                text: '${d.rows[i].score}/${d.rows[i].total}',
+                                style: TextStyle(
+                                    color: d.rows[i].passed ? _green : _red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13)),
+                            TextSpan(
+                                text: ' · ${_pct(d.rows[i].percent)}%',
+                                style: const TextStyle(
+                                    color: _muted, fontSize: 12)),
+                          ]),
+                        ),
+                        const SizedBox(height: 4),
+                        _StatusPill(passed: d.rows[i].passed),
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      RichText(
-                        text: TextSpan(children: [
-                          TextSpan(
-                              text: '${d.rows[i].score}/${d.rows[i].total}',
-                              style: TextStyle(
-                                  color: d.rows[i].passed ? _green : _red,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13)),
-                          TextSpan(
-                              text: ' · ${_pct(d.rows[i].percent)}%',
-                              style: const TextStyle(
-                                  color: _muted, fontSize: 12)),
-                        ]),
-                      ),
-                      const SizedBox(height: 4),
-                      _StatusPill(passed: d.rows[i].passed),
-                    ],
-                  ),
-                ]),
-              ),
-              if (i != d.rows.length - 1)
-                const Divider(height: 1, color: _border),
-            ],
-          ]),
+                  ]),
+                ),
+                if (i != d.rows.length - 1)
+                  const Divider(height: 1, color: _border),
+              ],
+            ]),
+          ),
         ),
       const Divider(height: 1, color: _border),
     ]);
@@ -1615,7 +1670,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   Widget _buildTotal(_Tot t, int dayCount, bool useTable) {
     const bg = Color(0xFFEEF0FA);
     final caption = Padding(
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
       child: Text(
           'Students Who Took counts unique students per day. The TOTAL counts '
           'each student once, so it can be lower than the sum of the days. '
@@ -1627,23 +1682,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Container(
           color: bg,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          padding: const EdgeInsets.fromLTRB(15, 10, 12, 10),
           child: Row(children: [
-            const SizedBox(width: 28),
             Expanded(
               flex: _fDate,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('TOTAL',
+              child: Text.rich(
+                TextSpan(children: [
+                  const TextSpan(
+                      text: 'TOTAL',
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 13.5,
                           color: _brand)),
-                  Text('$dayCount day${dayCount == 1 ? '' : 's'}',
+                  TextSpan(
+                      text: '   $dayCount day${dayCount == 1 ? '' : 's'}',
                       style: const TextStyle(fontSize: 11.5, color: _muted)),
-                ],
+                ]),
               ),
             ),
             _numCell('${t.students}', _fStudents, bold: true, color: _brand),
@@ -1654,6 +1708,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
             _numCell('${_pct(t.passRate)}%', _fRate, bold: true, color: _brand),
             _numCell('${_pct(t.avg)}%', _fAvg, bold: true, color: _brand),
             _numCell('${_pct(t.highest)}%', _fHigh, bold: true, color: _brand),
+            const Expanded(flex: _fView, child: SizedBox()),
           ]),
         ),
         caption,
@@ -1663,33 +1718,27 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Container(
         color: bg,
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        padding: const EdgeInsets.fromLTRB(15, 9, 12, 9),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('TOTAL · $dayCount day${dayCount == 1 ? '' : 's'}',
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13.5,
+                    color: _brand)),
+            const SizedBox(height: 6),
             Row(children: [
-              Text('TOTAL · $dayCount day${dayCount == 1 ? '' : 's'}',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13.5,
-                      color: _brand)),
-              const Spacer(),
-              Text('${_pct(t.passRate)}% pass rate',
-                  style: const TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.bold,
-                      color: _brand)),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              _mini('Students took', '${t.students}', _brand),
-              _mini('Submissions', '${t.submissions}', _brand),
+              _mini('Students', '${t.students}', _brand),
+              _mini('Submitted', '${t.submissions}', _brand),
               _mini('Passed', '${t.passed}', _green),
               _mini('Failed', '${t.failed}', t.failed > 0 ? _red : _muted),
+              _mini('Pass rate', '${_pct(t.passRate)}%', _brand),
             ]),
-            const SizedBox(height: 6),
-            Text('Average ${_pct(t.avg)}% · Highest ${_pct(t.highest)}%',
-                style: const TextStyle(fontSize: 11.5, color: _muted)),
+            const SizedBox(height: 4),
+            Text(
+                'Average score ${_pct(t.avg)}% · Highest score ${_pct(t.highest)}%',
+                style: const TextStyle(fontSize: 11, color: _muted)),
           ],
         ),
       ),
@@ -1786,8 +1835,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
       'Passed',
       'Failed',
       'Pass Rate',
-      'Average',
-      'Highest',
+      'Average Score',
+      'Highest Score',
     ];
 
     final summaryRows = <pw.TableRow>[
