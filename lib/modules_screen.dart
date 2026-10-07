@@ -38,15 +38,9 @@ import 'curriculum_repo.dart';
 //   subjectLabel   (e.g. 'Specialized Crime Investigation 2 …')
 // A curriculum subject belongs to a cluster when its code starts with the
 // cluster code followed by a space ("CDI 3" belongs to "CDI", "ENG 1" belongs
-// to "ENG").
-//
-// FULLY DYNAMIC — NOTHING IS HARD-CODED PER CLUSTER:
-//   The curriculum dropdown in Add Module is built from the LIVE curriculum
-//   (CurriculumRepo.streamAll()). ENG 1–4 or any other ENG subject is NOT
-//   defined in this file or in the repo's built-in list. Whatever an admin
-//   adds, edits, archives or deletes in Manage Curriculum (ENG 1, ENG 5,
-//   ENG 12 …, any year, any semester) appears here automatically. The same
-//   rule applies to every cluster (CRIM, CLJ, CDI, FORENSIC, LEA, CA, …).
+// to "ENG"). This is fully dynamic: ANY cluster whose curriculum has subjects
+// named "<CODE> <number>" gets its own curriculum dropdown in Add Module.
+// Nothing is hard-coded per cluster.
 //
 // FILE TYPE: every module card shows a file-type badge (PPTX, DOCX, PDF …).
 // New uploads save a `fileType` field (e.g. 'pptx'). Older modules that have no
@@ -325,10 +319,6 @@ Widget _fileTypeBadge(Map<String, dynamic> data) {
 // are ordinary subjects — they can be edited (code / name), archived,
 // restored, and permanently deleted by an admin, exactly like subjects added
 // manually. They are never re-created once the seed marker exists.
-//
-// NOTE: this list only seeds the module SUBJECT GROUPS (the chips). It does
-// NOT contain any curriculum subjects such as ENG 1–4; those come from the
-// curriculum (Manage Curriculum).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const List<List<String>> _kDefaultModuleSubjects = [
@@ -1684,9 +1674,7 @@ class _ManageModuleSubjectsScreenState
                                   'archived. Archiving also archives its '
                                   'modules. Archived subjects stay in the '
                                   'Archived tab and can be restored, or deleted '
-                                  'forever from there. The numbered curriculum '
-                                  'subjects under each one (e.g. ENG 1, ENG 2) '
-                                  'are managed in Manage Curriculum.',
+                                  'forever from there.',
                                   style: TextStyle(
                                       fontSize: 12,
                                       color: Color(0xFF1A237E)),
@@ -3619,13 +3607,10 @@ class _SmallActionButton extends StatelessWidget {
 // only choose from it; there is no add/manage link here.
 //
 // After choosing a subject group (e.g. CDI or ENG), a "Curriculum subject"
-// dropdown lists that group's curriculum subjects from the LIVE curriculum
-// (CurriculumRepo.streamAll()). NOTHING is hard-coded: ENG 1–4 were only
-// examples. Whatever curriculum subjects exist for the group (ENG 1 … ENG 12,
-// any year / semester) are listed, and any add / edit / archive / delete an
-// admin does in Manage Curriculum shows up here right away.
-//   • required when the group has curriculum subjects,
-//   • replaced by a short "no subjects yet" hint when it has none.
+// dropdown lists that group's curriculum subjects (CDI 1 … CDI 9, or
+// ENG 1 … ENG 4) from the LIVE curriculum. It is required when the group has
+// curriculum subjects, and hidden when it has none (e.g. a custom subject
+// that has no "<CODE> <number>" curriculum subjects yet).
 //
 // The chosen group is saved as `cluster`, which is exactly what the Modules
 // page groups by — so a new CDI upload lands in the existing CDI category.
@@ -3679,7 +3664,6 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
   }
 
   /// Curriculum subjects that belong to [cluster] (e.g. CDI 1 … CDI 9).
-  /// Read from the live curriculum — never from a fixed list.
   List<Subject> _curriculumFor(ModuleCluster? cluster) {
     if (cluster == null) return const [];
     return _curriculum
@@ -3938,11 +3922,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     );
   }
 
-  /// Dropdown of the LIVE curriculum subjects that belong to the chosen
-  /// subject group (CDI 1 … CDI 9, ENG 1 … ENG n …). Fully dynamic: it is
-  /// rebuilt from CurriculumRepo.streamAll() on every change an admin makes
-  /// in Manage Curriculum. When the group has no curriculum subjects yet, a
-  /// short hint is shown instead of the dropdown.
+  /// Dropdown of the live curriculum subjects (CDI 1 … CDI 9, ENG 1 … ENG 4)
+  /// that belong to the chosen subject group. Hidden when the group has none.
   Widget _buildCurriculumSubjectPicker() {
     return StreamBuilder<List<Subject>>(
       stream: CurriculumRepo.streamAll(),
@@ -3950,25 +3931,9 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
         if (snap.hasData) _curriculum = snap.data!;
 
         final cluster = _selectedCluster;
-        if (cluster == null) return const SizedBox.shrink();
-
-        // Still loading the curriculum for the first time: show nothing yet.
-        if (!snap.hasData && _curriculum.isEmpty) {
-          return const SizedBox.shrink();
-        }
-
         final options = _curriculumFor(cluster);
-
-        // Empty state: no curriculum subjects for this group (yet).
-        if (options.isEmpty) {
-          return Padding(
-            padding: const EdgeInsets.only(top: 14),
-            child: Text(
-              'No ${cluster.code} curriculum subjects yet. '
-              'An administrator can add them in Manage Curriculum.',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-            ),
-          );
+        if (cluster == null || options.isEmpty) {
+          return const SizedBox.shrink();
         }
 
         final value = options.any((s) => s.code == _selectedSubjectCode)
@@ -3995,8 +3960,7 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
                     .map((s) => DropdownMenuItem<String>(
                           value: s.code,
                           child: Text(
-                            '${s.code} — ${s.description}  '
-                            '(${s.yearLevel}, ${s.semester})',
+                            '${s.code} — ${s.description}',
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontSize: 13),
                           ),

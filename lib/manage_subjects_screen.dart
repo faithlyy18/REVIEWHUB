@@ -2,18 +2,14 @@ import 'package:flutter/material.dart';
 import 'curriculum_repo.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ManageSubjectsScreen  (ADMIN — legacy curriculum list screen)
+// ManageSubjectsScreen  (ADMIN — the ONLY place to add/remove subjects)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // • The official BS Criminology subjects are pre-loaded, shown with a lock,
 //   and can NOT be deleted.
-// • Every other subject (including ALL English subjects such as ENG 1, ENG 2
-//   …) is ordinary admin-managed data. They can be added here and deleted
-//   here (with confirmation). To EDIT or ARCHIVE them, use Manage Curriculum.
-// • Nothing about English (or any other module subject group) is hard-coded:
-//   a subject belongs to a group when its code is "<GROUP> <number>", e.g.
-//   "ENG 3" -> ENG. Anything you add here shows up live in the Add Module
-//   curriculum dropdown for that group.
+// • The admin can add extra subjects for any year level / semester. They
+//   appear live in the Create Review subject picker for that year level.
+// • Admin-added subjects can be deleted (with confirmation).
 //
 // This screen does NOT check accountType — the caller (teacher_home_screen)
 // only shows the entry point to admins. Also protect the `subjects`
@@ -40,8 +36,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
   }
 
   // Makes sure every official BS Criminology subject exists in Firestore,
-  // locked and not archived, and un-protects any old documents that were
-  // flagged core by an earlier version (e.g. ENG 1–4). Safe to run every time.
+  // locked and not archived. Safe to run every time.
   Future<void> _prepare() async {
     try {
       await CurriculumRepo.ensureCoreSubjects();
@@ -100,10 +95,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                   ]),
                   const SizedBox(height: 6),
                   Text(
-                    'It will appear in Create Review under the year level you '
-                    'choose. Use the code format "<GROUP> <number>" (e.g. '
-                    'ENG 5 or CRIM 9) so it also appears in the Add Module '
-                    'curriculum dropdown for that group.',
+                    'It will appear in Create Review under the year level you choose.',
                     style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                   const SizedBox(height: 16),
@@ -131,7 +123,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
                       labelText: 'Subject Code',
-                      hintText: 'e.g. ENG 5 or CRIM 9',
+                      hintText: 'e.g. CRIM 9',
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Required' : null,
@@ -142,7 +134,7 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                     textCapitalization: TextCapitalization.words,
                     decoration: const InputDecoration(
                       labelText: 'Subject Title',
-                      hintText: 'e.g. Technical Writing',
+                      hintText: 'e.g. Introduction to Forensic Science',
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Required' : null,
@@ -252,10 +244,9 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
             style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
         content: Text(
           'Delete "${subject.code} — ${subject.description}"?\n\n'
-          'It will disappear from the Create Review subject list and the Add '
-          'Module curriculum dropdown right away. Existing reviews and '
-          'modules that already used this subject keep their saved subject '
-          'name.',
+          'It will disappear from the Create Review subject list right away. '
+          'Existing reviews that already used this subject keep their saved '
+          'subject name.',
         ),
         actions: [
           TextButton(
@@ -360,9 +351,8 @@ class _ManageSubjectsScreenState extends State<ManageSubjectsScreen> {
                     Expanded(
                       child: Text(
                         'Locked subjects are the official BS Criminology '
-                        'curriculum and cannot be removed. All other subjects '
-                        '(including English: ENG 1, ENG 2 …) are managed by '
-                        'you. Tap "Add Subject" to add more for a year level.',
+                        'curriculum and cannot be removed. Tap "Add Subject" '
+                        'to add more for a year level.',
                         style: TextStyle(fontSize: 11, color: Colors.grey[800]),
                       ),
                     ),
