@@ -50,6 +50,10 @@ import 'curriculum_repo.dart';
 // A module with no date at all is shown without a date chip and sorted after
 // the dated ones.
 //
+// "NEW" BADGE: only the SINGLE most recently uploaded module carries the red
+// NEW badge (see _newestModuleId). When a newer module is uploaded it takes
+// the badge and the previous one loses it automatically.
+//
 // ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen navigates
 //   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
 // Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
@@ -151,6 +155,8 @@ bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
 //                        to the server, so it counts as "now" (newest).
 // _compareUploadedDesc : newest first. Modules without a date go last.
 // _formatUploadDate    : "Oct 3, 2026"
+// _newestModuleId      : id of the ONE newest module in a list; that module
+//                        (and only that one) gets the NEW badge.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const List<String> _kMonths = [
@@ -180,6 +186,22 @@ int _compareUploadedDesc(Map<String, dynamic> a, Map<String, dynamic> b) {
 
 String _formatUploadDate(DateTime dt) =>
     '${_kMonths[dt.month - 1]} ${dt.day}, ${dt.year}';
+
+/// Document id of the single most recently uploaded module in [docs], or null
+/// when none of them has an upload date. Only this module shows the NEW badge.
+String? _newestModuleId(Iterable<QueryDocumentSnapshot> docs) {
+  String? newestId;
+  DateTime? newestAt;
+  for (final d in docs) {
+    final at = _uploadedAtOf(d.data() as Map<String, dynamic>);
+    if (at == null) continue;
+    if (newestAt == null || at.isAfter(newestAt)) {
+      newestAt = at;
+      newestId = d.id;
+    }
+  }
+  return newestId;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE TYPE helpers
@@ -842,6 +864,7 @@ class _EditSubjectDialogState extends State<_EditSubjectDialog> {
 //     (CDI 1 -> CDI 2 -> … -> CDI 10), then by title.
 //   • Every module card keeps Preview Module + Archive and shows its
 //     "Uploaded <date>" chip.
+//   • Only the single most recently uploaded module shows the NEW badge.
 //   • Subjects are NOT managed here. Instructors only pick from the existing
 //     subjects in the Add Module sheet; only the admin manages subjects
 //     (drawer > Manage Subjects).
@@ -1124,10 +1147,14 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
                 }
                 _resetCategoryIfGone(groups);
 
+                // Only the single most recently uploaded module (across all
+                // categories) gets the NEW badge.
+                final newestId = _newestModuleId(docs);
+
                 final open = _categoryCode;
                 if (open != null && groups.containsKey(open)) {
                   return _buildCategoryPage(
-                      open, groups[open]!, clusters);
+                      open, groups[open]!, clusters, newestId);
                 }
                 return _buildCategoryList(groups, clusters);
               },
@@ -1179,7 +1206,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
   // ── Page 2: the modules inside one category ─────────────────────────────
 
   Widget _buildCategoryPage(String code, List<QueryDocumentSnapshot> items,
-      List<ModuleCluster> clusters) {
+      List<ModuleCluster> clusters, String? newestId) {
     final color = _colorForCode(code);
     final label = _labelFor(code, clusters, items);
 
@@ -1266,6 +1293,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
                   _ModuleCard(
                     data: data,
                     isTeacher: true,
+                    isNew: doc.id == newestId,
                     onArchive: () => _archiveModule(doc.id),
                   ),
                 ],
@@ -1581,13 +1609,17 @@ class _ManageModuleSubjectsScreenState
 // _kGroupByYearSemester at the top of this file for the optional
 // Year/Semester group headers). Ties fall back to curriculum subject order,
 // then the number in the title, then A–Z.
+//
+// NEW BADGE: only the single most recently uploaded module (among the modules
+// that are actually shown) carries the NEW badge.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModEntry {
+  final String id; // Firestore doc id
   final Map<String, dynamic> data;
   final Subject subject;
   final String cluster;
-  const _ModEntry(this.data, this.subject, this.cluster);
+  const _ModEntry(this.id, this.data, this.subject, this.cluster);
 
   String get title => (data['title'] as String? ?? '').trim();
 }
@@ -1640,9 +1672,25 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
       if (cluster.isEmpty) {
         cluster = subject.code.trim().split(' ').first.toUpperCase();
       }
-      out.add(_ModEntry(m, subject, cluster));
+      out.add(_ModEntry(d.id, m, subject, cluster));
     }
     return out;
+  }
+
+  /// Id of the single most recently uploaded module among [entries], or null
+  /// when none has an upload date. Only this module shows the NEW badge.
+  static String? _newestEntryId(List<_ModEntry> entries) {
+    String? newestId;
+    DateTime? newestAt;
+    for (final e in entries) {
+      final at = _uploadedAtOf(e.data);
+      if (at == null) continue;
+      if (newestAt == null || at.isAfter(newestAt)) {
+        newestAt = at;
+        newestId = e.id;
+      }
+    }
+    return newestId;
   }
 
   /// Curriculum order: year, semester, subject order, subject code, title
@@ -1712,6 +1760,10 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
               };
               final entries = _clean(modSnap.data!.docs, subjByCode);
 
+              // Only the single most recently uploaded module (across all
+              // categories) gets the NEW badge.
+              final newestId = _newestEntryId(entries);
+
               ModuleCluster? selected;
               for (final c in clusters) {
                 if (c.code.toUpperCase() == _categoryCode) selected = c;
@@ -1730,7 +1782,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
                   Expanded(
                     child: selected == null
                         ? _categories(clusters, entries)
-                        : _moduleGroups(inCategory),
+                        : _moduleGroups(inCategory, newestId),
                   ),
                 ],
               );
@@ -1816,7 +1868,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
 
   // ── Category page: modules, newest upload first ──────────────────────────
 
-  Widget _moduleGroups(List<_ModEntry> list) {
+  Widget _moduleGroups(List<_ModEntry> list, String? newestId) {
     if (list.isEmpty) {
       return _empty(Icons.folder_open_rounded,
           'No modules uploaded for this subject yet.');
@@ -1861,7 +1913,9 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
                 ],
               ),
             ),
-            _ModuleCard(data: e.data, isTeacher: false), // Read Module kept
+            // Read Module kept; NEW badge only on the single newest module.
+            _ModuleCard(
+                data: e.data, isTeacher: false, isNew: e.id == newestId),
           ],
         ),
       ));
@@ -2016,6 +2070,8 @@ class _NavCard extends StatelessWidget {
 //                     dialog unchanged).
 //   • No modules   -> "This subject has no module yet."
 //   • Back button  -> returns to the Subjects tab.
+//   • NEW badge    -> only the single most recently uploaded module overall
+//                     (not just within this subject) carries it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class StudentSubjectModulesScreen extends StatefulWidget {
@@ -2036,15 +2092,30 @@ class _StudentSubjectModulesScreenState
       .where('archived', isEqualTo: false)
       .snapshots();
 
+  /// Id of the single most recently uploaded module on the whole platform
+  /// (placeholder-titled and subject-less modules are ignored, as they are
+  /// hidden from students anyway). Only this module shows the NEW badge.
+  String? _newestId(List<QueryDocumentSnapshot> docs) {
+    final valid = docs.where((d) {
+      final m = d.data() as Map<String, dynamic>;
+      final title = (m['title'] as String? ?? '').trim();
+      final subject = (m['subject'] as String? ?? '').trim();
+      return subject.isNotEmpty &&
+          !_StudentModulesScreenState._invalidTitle(title);
+    });
+    return _newestModuleId(valid);
+  }
+
   /// Modules of this subject only: placeholder titles removed, duplicates
   /// merged, ordered by upload date (newest first), then by the first number
-  /// in the title, then A–Z.
+  /// in the title, then A–Z. Each map also carries its document id under
+  /// `_docId` so the NEW badge can be matched.
   List<Map<String, dynamic>> _mine(List<QueryDocumentSnapshot> docs) {
     final code = widget.subject.code.trim().toLowerCase();
     final seen = <String>{};
     final out = <Map<String, dynamic>>[];
     for (final d in docs) {
-      final m = d.data() as Map<String, dynamic>;
+      final m = Map<String, dynamic>.from(d.data() as Map<String, dynamic>);
       if ((m['subject'] as String? ?? '').trim().toLowerCase() != code) {
         continue;
       }
@@ -2052,6 +2123,7 @@ class _StudentSubjectModulesScreenState
       if (_StudentModulesScreenState._invalidTitle(title)) continue;
       final key = title.toLowerCase().replaceAll(RegExp(r'\s+'), '');
       if (!seen.add(key)) continue;
+      m['_docId'] = d.id;
       out.add(m);
     }
     out.sort((a, b) {
@@ -2127,7 +2199,7 @@ class _StudentSubjectModulesScreenState
                         }
                         final mods = _mine(snap.data!.docs);
                         if (mods.isEmpty) return _noModules();
-                        return _list(mods);
+                        return _list(mods, _newestId(snap.data!.docs));
                       },
                     ),
                   ),
@@ -2156,7 +2228,7 @@ class _StudentSubjectModulesScreenState
         ),
       );
 
-  Widget _list(List<Map<String, dynamic>> mods) {
+  Widget _list(List<Map<String, dynamic>> mods, String? newestId) {
     final s = widget.subject;
     final n = mods.length;
     return ListView(
@@ -2207,7 +2279,11 @@ class _StudentSubjectModulesScreenState
                     ],
                   ),
                 ),
-                _ModuleCard(data: m, isTeacher: false), // Read Module kept
+                // Read Module kept; NEW badge only on the single newest module.
+                _ModuleCard(
+                    data: m,
+                    isTeacher: false,
+                    isNew: m['_docId'] == newestId),
               ],
             ),
           ),
@@ -2245,6 +2321,9 @@ class _StudentSubjectModulesScreenState
 // shows a confirmation dialog saying which subject the module belongs to; the
 // module only opens after the student taps "Open Module". Teachers preview
 // directly.
+//
+// The red NEW badge is decided by the parent screen and passed in as [isNew]:
+// only the single most recently uploaded module gets it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ModuleCard extends StatefulWidget {
@@ -2252,10 +2331,14 @@ class _ModuleCard extends StatefulWidget {
   final bool isTeacher;
   final VoidCallback? onArchive;
 
+  /// True only for the single most recently uploaded module.
+  final bool isNew;
+
   const _ModuleCard({
     required this.data,
     required this.isTeacher,
     this.onArchive,
+    this.isNew = false,
   });
 
   @override
@@ -2264,19 +2347,6 @@ class _ModuleCard extends StatefulWidget {
 
 class _ModuleCardState extends State<_ModuleCard> {
   String? _teacherName;
-
-  /// A module is "NEW" for 30 days after it was uploaded. The badge hides
-  /// itself automatically once that time has passed.
-  /// A null `uploadedAt` that is present on the document means the upload is
-  /// still being written to the server, so it counts as brand new.
-  bool get _isNew {
-    if (!widget.data.containsKey('uploadedAt')) return false;
-    final raw = widget.data['uploadedAt'];
-    if (raw == null) return true;
-    if (raw is! Timestamp) return false;
-    final age = DateTime.now().difference(raw.toDate());
-    return age < const Duration(days: 30);
-  }
 
   /// "Uploaded Oct 3, 2026", or null when the module has no upload date.
   String? get _uploadedLabel {
@@ -2537,7 +2607,9 @@ class _ModuleCardState extends State<_ModuleCard> {
                                   color: Color(0xFF1A237E),
                                 )),
                           ),
-                          if (_isNew) ...[
+                          // NEW badge: only the single most recently
+                          // uploaded module (decided by the parent screen).
+                          if (widget.isNew) ...[
                             const SizedBox(width: 8),
                             Container(
                               margin: const EdgeInsets.only(top: 2),
@@ -3376,8 +3448,8 @@ class _SmallActionButton extends StatelessWidget {
 //
 // The chosen file's extension is saved as `fileType` (e.g. 'pptx') and drives
 // the file-type badge on the module cards. The upload time is saved as
-// `uploadedAt` (server timestamp), which drives the "Uploaded <date>" chip and
-// the newest-first ordering.
+// `uploadedAt` (server timestamp), which drives the "Uploaded <date>" chip,
+// the newest-first ordering and the single NEW badge.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _UploadModuleSheet extends StatefulWidget {

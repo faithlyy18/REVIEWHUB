@@ -19,27 +19,39 @@ import 'curriculum_repo.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// "NEW" badge for recently posted reviews
+// "NEW" badge — ONLY the most recently posted review
 //
-// A review is NEW for exactly 14 days after it was posted. This is based ONLY
-// on the quiz's own `createdAt` (set once when the review is created and never
-// changed by edits, which only write `updatedAt`) — never on whether the
-// student has opened the review. Once 14 days have passed the badge simply
-// stops showing; nobody has to edit the review.
+// Exactly ONE review carries the NEW badge at any time: the active
+// (non-archived) review with the newest `createdAt`. When an instructor posts
+// a newer review, that review takes the badge and the previous one loses it
+// automatically; nobody has to edit anything.
+//
+// This is based ONLY on the review's own `createdAt` (set once when the review
+// is created and never changed by edits, which only write `updatedAt`) — never
+// on whether the student has opened the review. The newest review is picked
+// from ALL active reviews, not just the ones left after the Year filter, so
+// the badge does not jump around when the student changes the filter.
 //
 //   • `createdAt` present but still null  -> the save is still being written
-//     to the server, so it counts as brand new.
-//   • `createdAt` missing                 -> older review, no badge.
+//     to the server, so it counts as the newest.
+//   • `createdAt` missing                 -> older review, never gets the badge.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const Duration kNewReviewDuration = Duration(days: 14);
-
-bool _isReviewNew(Map<String, dynamic> quiz) {
-  if (!quiz.containsKey('createdAt')) return false;
-  final raw = quiz['createdAt'];
-  if (raw == null) return true;
-  if (raw is! Timestamp) return false;
-  return DateTime.now().difference(raw.toDate()) < kNewReviewDuration;
+/// Document id of the single newest active review, or null when there is none.
+String? _newestReviewId(List<QueryDocumentSnapshot> docs) {
+  String? newestId;
+  DateTime? newestAt;
+  for (final doc in docs) {
+    final quiz = doc.data() as Map<String, dynamic>;
+    if (quiz['archived'] as bool? ?? false) continue;
+    final posted = _postedAtOf(quiz);
+    if (posted == null) continue;
+    if (newestAt == null || posted.isAfter(newestAt)) {
+      newestAt = posted;
+      newestId = doc.id;
+    }
+  }
+  return newestId;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -578,6 +590,12 @@ class _QuizzesTab extends StatelessWidget {
                     }
 
                     final allDocs = snapshot.data?.docs ?? [];
+
+                    // Only this ONE review (the most recently posted active
+                    // review) gets the NEW badge. Picked from all active
+                    // reviews, before the Year filter is applied.
+                    final newestId = _newestReviewId(allDocs);
+
                     final quizzes = allDocs.where((doc) {
                       final quiz = doc.data() as Map<String, dynamic>;
                       final isArchived = quiz['archived'] as bool? ?? false;
@@ -634,8 +652,9 @@ class _QuizzesTab extends StatelessWidget {
                           studentUid: studentUid,
                           studentName: studentName,
                           studentYearLevel: studentYearLevel,
-                          // NEW badge: 14 days from when it was posted.
-                          isNew: _isReviewNew(quiz),
+                          // NEW badge: only the single most recently posted
+                          // review.
+                          isNew: quizId == newestId,
                           // "Posted <date>" chip.
                           postedAt: _postedAtOf(quiz),
                         );
@@ -1066,7 +1085,7 @@ class _QuizCard extends StatefulWidget {
   final String studentName;
   final String studentYearLevel;
 
-  /// True while the review is within 14 days of being posted. Shows the red
+  /// True only for the single most recently posted review. Shows the red
   /// "NEW" badge beside the title; purely visual, changes nothing else.
   final bool isNew;
 
@@ -1394,8 +1413,8 @@ class _QuizCardState extends State<_QuizCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Title + NEW badge (badge only while within 14 days
-                      // of the review being posted).
+                      // Title + NEW badge (badge only on the single most
+                      // recently posted review).
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
