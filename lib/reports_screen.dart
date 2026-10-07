@@ -139,12 +139,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
   ];
   static const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-  String _fmtDate(Timestamp? ts) {
-    if (ts == null) return '—';
-    final d = ts.toDate();
-    return '${_months[d.month - 1]} ${d.day}, ${d.year}';
-  }
-
   String _fmtTime(Timestamp? ts) {
     if (ts == null) return '';
     final d = ts.toDate();
