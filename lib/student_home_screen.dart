@@ -591,6 +591,9 @@ class _QuizzesTab extends StatelessWidget {
                           subject: subject,
                           timeLimitMinutes:
                               (quiz['timeLimitMinutes'] as num?)?.toInt(),
+                          // `createdBy` = uid of the instructor who owns
+                          // this review. It becomes the request's
+                          // `instructorId`.
                           teacherUid: quiz['createdBy'] as String? ?? '',
                           studentUid: studentUid,
                           studentName: studentName,
@@ -1012,6 +1015,8 @@ class _QuizCard extends StatefulWidget {
   final String yearLevel;
   final String subject;
   final int? timeLimitMinutes;
+
+  /// uid of the instructor who owns this review (the quiz's `createdBy`).
   final String teacherUid;
   final String studentUid;
   final String studentName;
@@ -1111,13 +1116,11 @@ class _QuizCardState extends State<_QuizCard> {
     } catch (_) {}
   }
 
-  // ── THE FIX ───────────────────────────────────────────────────────────────
   // take_quiz_screen.dart saves ONE result document per student+quiz and
-  // stores the real attempt number in its `attemptCount` field. Counting the
-  // documents therefore always gave 1, so the card never reached 2/2.
-  // The attempt count is now the larger of "documents found" and "highest
-  // attemptCount stored" (older results with no field count as 1) — exactly
-  // the same rule take_quiz_screen.dart uses.
+  // stores the real attempt number in its `attemptCount` field. The attempt
+  // count is the larger of "documents found" and "highest attemptCount
+  // stored" (older results with no field count as 1) — the same rule
+  // take_quiz_screen.dart uses.
   Future<void> _checkIfTaken() async {
     try {
       final result = await FirebaseFirestore.instance
@@ -1224,6 +1227,21 @@ class _QuizCardState extends State<_QuizCard> {
     if (_requestStatus == 'pending' || _requestStatus == 'approved') return;
     if (_sendingRequest) return;
 
+    // GUARD 3: the request MUST be tied to the instructor who owns this
+    // review. The owner is the review's `createdBy` uid. Without it the
+    // request could never reach the right instructor, so don't send it.
+    final instructorId = widget.teacherUid.trim();
+    if (instructorId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text(
+            'This review has no instructor assigned, so a request cannot '
+            'be sent. Please contact your instructor.'),
+        backgroundColor: Colors.red.shade700,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
     final wasDenied = _requestStatus == 'denied';
     final confirm = await showDialog<bool>(
       context: context,
@@ -1262,9 +1280,9 @@ class _QuizCardState extends State<_QuizCard> {
 
     setState(() => _sendingRequest = true);
     try {
-      // One request doc per quiz+student. A new request overwrites the old
-      // (denied/used) one and resets it to 'pending'. This is the doc the
-      // instructor's "Requests" tab listens to.
+      // One request doc per quiz+student. `instructorId` is the owner of the
+      // review; the instructor's Requests tab queries on it, so each
+      // instructor only sees requests for their own reviews.
       await FirebaseFirestore.instance
           .collection('retake_requests')
           .doc(_requestDocId)
@@ -1273,7 +1291,7 @@ class _QuizCardState extends State<_QuizCard> {
         'quizTitle': widget.title,
         'subject': widget.subject,
         'yearLevel': widget.yearLevel,
-        'teacherUid': widget.teacherUid,
+        'instructorId': instructorId, // owner of the review
         'studentUid': widget.studentUid,
         'studentName': widget.studentName,
         'studentYearLevel': widget.studentYearLevel,

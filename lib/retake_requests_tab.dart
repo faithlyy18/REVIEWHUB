@@ -1,44 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// Instructor-facing tab for approving/denying students' requests to retake
 /// a review after they've used both free attempts.
 ///
-/// WIRED UP in TeacherHomeScreen.dart as the 4th nav tab ("Requests"),
-/// placed right after Archive.
+/// OWNERSHIP: every request stores `instructorId` = the uid of the instructor
+/// who created the review (the quiz's `createdBy`). This tab only queries
+/// requests where `instructorId` equals the logged-in instructor's uid, so an
+/// instructor never sees requests for another instructor's reviews.
 ///
-/// DATA MODEL: reads/writes the `retake_requests` collection. One document
-/// per `{quizId}_{studentUid}`, created from the student side (in
-/// student_home_screen.dart) once a student has used kMaxFreeAttempts (2)
-/// attempts on a review and taps "Request Permission to Retake". Fields:
+/// DATA MODEL (`retake_requests/{quizId}_{studentUid}`):
 ///   quizId, quizTitle, subject, yearLevel,
+///   instructorId  (owner of the review),
 ///   studentUid, studentName, studentYearLevel,
-///   attemptCount (int, attempts used at request time),
-///   status ('pending' | 'approved' | 'denied' | 'used'),
-///   requestedAt, respondedAt, usedAt (server timestamps)
+///   attemptCount, status ('pending' | 'approved' | 'denied' | 'used'),
+///   requestedAt, respondedAt, respondedBy, usedAt
 ///
-/// Approving sets status to 'approved', which unlocks exactly one more
-/// attempt in take_quiz_screen.dart; that screen flips status to 'used'
-/// once the student actually submits it, so a further attempt requires a
-/// brand-new request.
-///
-/// GROUPING (3 levels):
-///   Category (e.g. "CDI")
-///     └─ Level / review (e.g. "CDI 1 – Fundamentals of Investigation and
-///        Intelligence")
-///          └─ Pending student requests
-///
-/// The category and level come from the review's `subjectCode` (e.g.
-/// "CDI 1" → category "CDI"). Retake requests don't store `subjectCode`,
-/// so it is read from the matching `quizzes/{quizId}` document (and cached).
-/// If a request already carries a `subjectCode` field, that is used first.
-/// Requests whose review has no subject code are grouped under "Other".
-///
-/// Each level section shows how many requests / students are waiting and
-/// has its own "Approve All" / "Deny All" buttons, which update every
-/// pending request in that level with Firestore batched writes. Individual
-/// Approve / Deny buttons on each request still work. Pending counts are
-/// shown on the header, on every category, and on every level.
+/// GROUPING (inside the already-filtered data):
+///   Category (e.g. "CDI") -> Level / review -> pending student requests
 class RetakeRequestsTab extends StatefulWidget {
   const RetakeRequestsTab({super.key});
 
@@ -48,8 +28,8 @@ class RetakeRequestsTab extends StatefulWidget {
 
 // One level (review) inside a category.
 class _Level {
-  final String code; // e.g. "CDI 1" (may be empty)
-  final String subject; // e.g. "Fundamentals of Investigation and Intelligence"
+  final String code;
+  final String subject;
   final List<QueryDocumentSnapshot> docs = [];
   _Level(this.code, this.subject);
 
@@ -57,11 +37,21 @@ class _Level {
 }
 
 class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
-  // Firestore allows 500 writes per batch; stay comfortably below it.
   static const int _batchLimit = 400;
-
-  // Label used for requests that have no subject / subject code.
   static const String _noSubjectLabel = 'Other';
+
+  // The logged-in instructor. Every query below is scoped to this uid.
+  late final String? _uid = FirebaseAuth.instance.currentUser?.uid;
+
+  // Created once so the tab doesn't resubscribe on every rebuild.
+  // FILTER ORDER: instructor first, then status.
+  late final Stream<QuerySnapshot>? _pendingStream = _uid == null
+      ? null
+      : FirebaseFirestore.instance
+          .collection('retake_requests')
+          .where('instructorId', isEqualTo: _uid)
+          .where('status', isEqualTo: 'pending')
+          .snapshots();
 
   // quizId -> subjectCode ('' when the quiz has none or can't be read).
   final Map<String, String> _codeCache = {};
@@ -82,6 +72,7 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
       await ref.set({
         'status': status,
         'respondedAt': FieldValue.serverTimestamp(),
+        'respondedBy': _uid,
       }, SetOptions(merge: true));
       _showSnack(
         context,
@@ -89,6 +80,7 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
         status == 'approved' ? Colors.green : Colors.red.shade700,
       );
     } catch (e) {
+      debugPrint('retake respond failed: $e');
       _showSnack(context, 'Something went wrong. Please try again.',
           Colors.red.shade700);
     }
@@ -147,6 +139,7 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
             {
               'status': status,
               'respondedAt': FieldValue.serverTimestamp(),
+              'respondedBy': _uid,
             },
             SetOptions(merge: true),
           );
@@ -161,6 +154,7 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
         approve ? Colors.green : Colors.red.shade700,
       );
     } catch (e) {
+      debugPrint('retake bulk respond failed: $e');
       _showSnack(context, 'Something went wrong. Please try again.',
           Colors.red.shade700);
     }
@@ -176,8 +170,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
   }
 
   // ── Subject-code helpers ────────────────────────────────────────────────
-  // "CDI 1" -> category "CDI", number 1. A code with no trailing number
-  // (e.g. "ETHICS") becomes its own category.
   static final RegExp _codePattern = RegExp(r'^(.*?)[\s\-_.]*(\d+)\s*$');
 
   String _categoryOf(String code) {
@@ -205,13 +197,13 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
     return _codeCache[quizId] ?? '';
   }
 
-  /// Reads `subjectCode` from the quizzes collection for every quizId that
-  /// isn't cached yet. Failures are cached as '' so we never retry forever.
   Future<void> _loadCodes(Set<String> quizIds) async {
     await Future.wait(quizIds.map((id) async {
       try {
-        final snap =
-            await FirebaseFirestore.instance.collection('quizzes').doc(id).get();
+        final snap = await FirebaseFirestore.instance
+            .collection('quizzes')
+            .doc(id)
+            .get();
         final code =
             ((snap.data() ?? {})['subjectCode'] as String?)?.trim() ?? '';
         _codeCache[id] = code;
@@ -221,9 +213,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
     }));
   }
 
-  /// Category → levels. Requests inside each level are sorted oldest first;
-  /// categories are alphabetical ("Other" last); levels are sorted by their
-  /// number (CDI 1, CDI 2, ...), then by name.
   Map<String, List<_Level>> _group(List<QueryDocumentSnapshot> docs) {
     final byCategory = <String, Map<String, _Level>>{};
 
@@ -243,7 +232,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
       levels.putIfAbsent(levelKey, () => _Level(code, subject)).docs.add(d);
     }
 
-    // Sort requests inside each level (oldest first).
     for (final levels in byCategory.values) {
       for (final level in levels.values) {
         level.docs.sort((a, b) {
@@ -277,10 +265,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
     };
   }
 
-  // ── Header banner + live pending-count badge ────────────────────────────
-  // `count` is null while the stream hasn't emitted yet (or errored), in
-  // which case the badge is simply omitted rather than showing a wrong or
-  // flickering "0".
   Widget _buildHeader(int? count) {
     return Container(
       width: double.infinity,
@@ -291,8 +275,8 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
         children: [
           const Expanded(
             child: Text(
-              'Students appear here after using both free attempts on a '
-              'review and asking for permission to try again.',
+              'Students appear here after using both attempts on one of YOUR '
+              'reviews and asking for permission to try again.',
               style: TextStyle(fontSize: 12, color: Colors.black54),
             ),
           ),
@@ -346,8 +330,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
                     final category = categories[index];
                     final levels = grouped[category]!;
                     return _CategoryGroup(
-                      // Keeps expanded/collapsed state when the
-                      // Firestore stream emits new data.
                       key: ValueKey('cat|$category'),
                       category: category,
                       levels: levels,
@@ -366,15 +348,23 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
 
   @override
   Widget build(BuildContext context) {
-    // Filtered by status only (no orderBy) so this doesn't require a
-    // composite Firestore index — sorting happens client-side.
-    final pendingStream = FirebaseFirestore.instance
-        .collection('retake_requests')
-        .where('status', isEqualTo: 'pending')
-        .snapshots();
+    // Not signed in -> nothing to show (and nothing must be queried).
+    if (_uid == null || _pendingStream == null) {
+      return Column(
+        children: [
+          _buildHeader(null),
+          const Expanded(
+            child: Center(
+              child: Text('Please sign in again to see your requests.',
+                  style: TextStyle(color: Colors.grey)),
+            ),
+          ),
+        ],
+      );
+    }
 
     return StreamBuilder<QuerySnapshot>(
-      stream: pendingStream,
+      stream: _pendingStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting &&
             !snapshot.hasData) {
@@ -390,12 +380,8 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
           );
         }
 
-        // IMPORTANT: without this check, a permission-denied error
-        // (e.g. missing/incorrect Firestore security rules on the
-        // retake_requests collection) silently falls through to the
-        // "No pending requests." empty state below, making a rules
-        // problem look identical to "everything is fine, there's
-        // just nothing to show." Surface it explicitly instead.
+        // Surface permission-denied / index errors instead of silently
+        // showing "No pending requests."
         if (snapshot.hasError) {
           return Column(
             children: [
@@ -429,7 +415,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
 
         final docs = (snapshot.data?.docs ?? []).toList();
 
-        // Quizzes whose subject code we haven't looked up yet.
         final missing = <String>{};
         for (final d in docs) {
           final data = d.data() as Map<String, dynamic>;
@@ -444,7 +429,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
           return _buildList(docs.length, _group(docs));
         }
 
-        // First time we see these reviews: fetch their codes, then group.
         return FutureBuilder<void>(
           future: _loadCodes(missing),
           builder: (context, codeSnap) {
@@ -470,7 +454,6 @@ class _RetakeRequestsTabState extends State<RetakeRequestsTab> {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Level 1: one collapsible card per CATEGORY (e.g. "CDI").
-// Contains one _LevelGroup per review level (CDI 1, CDI 2, ...).
 // ─────────────────────────────────────────────────────────────────────────
 class _CategoryGroup extends StatefulWidget {
   final String category;
@@ -494,7 +477,6 @@ class _CategoryGroup extends StatefulWidget {
 }
 
 class _CategoryGroupState extends State<_CategoryGroup> {
-  // Collapsed by default: the instructor taps a category to see its reviews.
   bool _expanded = false;
 
   int get _requestCount =>
@@ -619,9 +601,7 @@ class _CategoryGroupState extends State<_CategoryGroup> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Level 2: one collapsible section per review level
-// (e.g. "CDI 1 – Fundamentals of Investigation and Intelligence"),
-// with bulk Approve All / Deny All and the individual student requests.
+// Level 2: one collapsible section per review level.
 // ─────────────────────────────────────────────────────────────────────────
 class _LevelGroup extends StatefulWidget {
   final String title;
@@ -645,7 +625,6 @@ class _LevelGroup extends StatefulWidget {
 }
 
 class _LevelGroupState extends State<_LevelGroup> {
-  // Collapsed by default: tap a level to see its pending student requests.
   bool _expanded = false;
   bool _busy = false;
 
@@ -654,8 +633,6 @@ class _LevelGroupState extends State<_LevelGroup> {
     try {
       await widget.onRespondAll(status);
     } finally {
-      // The group usually disappears once its requests are approved, so
-      // only touch state if we're still on screen.
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -687,7 +664,6 @@ class _LevelGroupState extends State<_LevelGroup> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Level header (tap to collapse/expand) ─────────────────────
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
@@ -749,7 +725,6 @@ class _LevelGroupState extends State<_LevelGroup> {
             ),
           ),
 
-          // ── Bulk actions (shown when there is more than one request) ──
           if (count > 1)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -795,7 +770,6 @@ class _LevelGroupState extends State<_LevelGroup> {
               ),
             ),
 
-          // ── Individual requests ───────────────────────────────────────
           if (_expanded) ...[
             const Divider(height: 1),
             Padding(
@@ -812,13 +786,39 @@ class _LevelGroupState extends State<_LevelGroup> {
     );
   }
 
+  Widget _infoRow(String label, String value, {Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 70,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: valueColor ?? Colors.black87)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRequestTile(QueryDocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
     final quizTitle = data['quizTitle'] as String? ?? 'Review';
     final studentName = data['studentName'] as String? ?? 'Student';
     final yearLevel = data['studentYearLevel'] as String? ?? '';
-    final attemptCount = data['attemptCount'] as int? ?? 0;
+    final attemptCount = (data['attemptCount'] as num?)?.toInt() ?? 0;
     final requestedAt = data['requestedAt'] as Timestamp?;
+
+    final attemptsLabel =
+        attemptCount <= 2 ? '$attemptCount/2' : '$attemptCount';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -860,26 +860,14 @@ class _LevelGroupState extends State<_LevelGroup> {
                   ],
                 ),
               ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.orange.shade200),
-                ),
-                child: Text('$attemptCount attempts used',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.orange.shade800,
-                        fontWeight: FontWeight.w600)),
-              ),
             ],
           ),
           const SizedBox(height: 10),
-          Text('Review: $quizTitle',
-              style:
-                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          _infoRow('Review', quizTitle),
+          _infoRow('Attempts', '$attemptsLabel used'),
+          _infoRow('Request', 'Wants to take the review again'),
+          _infoRow('Status', 'Pending Instructor Approval',
+              valueColor: Colors.orange.shade800),
           if (requestedAt != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
