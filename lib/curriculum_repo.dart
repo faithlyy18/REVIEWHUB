@@ -15,20 +15,22 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 //   archived    (bool, default false — archived subjects are hidden from
 //                every picker/viewer but can be restored by an admin)
 //   archivedAt  (server timestamp, only present while archived)
-//   isCore      (bool — true for the built-in curriculum (BS Criminology
-//                subjects + the English subjects ENG 1–4). Core subjects can
-//                NEVER be edited, archived or deleted.)
+//   isCore      (bool — true ONLY for the built-in BS Criminology subjects
+//                listed in _seedCurriculum. Core subjects can NEVER be
+//                edited, archived or deleted.)
 //
-// A subject is also treated as core when its code matches one of the codes in
-// the built-in curriculum (_seedCurriculum), even if the Firestore document
-// has no `isCore` flag yet.
+// "Core" is decided ONLY by the built-in list (_seedCurriculum). The isCore
+// flag stored in Firestore is NOT trusted on its own, so old documents that
+// were flagged core by an earlier version (e.g. ENG 1–4) become ordinary,
+// fully editable subjects.
 //
-// HOW MODULE SUBJECTS (CRIM, CLJ, ENG …) USE THIS COLLECTION
+// ENGLISH (and every other module subject group) IS NOT HARD-CODED.
 //   A curriculum subject belongs to a module subject group when its code
 //   starts with the group code followed by a space: "CRIM 1" -> CRIM,
-//   "ENG 2" -> ENG. That is the ONLY link, so any group that has curriculum
-//   subjects named "<CODE> <number>" automatically gets its own curriculum
-//   dropdown in Add Module. Nothing is hard-coded per group.
+//   "ENG 2" -> ENG. That is the ONLY link. English subjects are therefore
+//   plain admin-managed data: add / edit / archive / delete them in
+//   Manage Curriculum (e.g. ENG 1, ENG 2 … ENG 12 — any number, any year,
+//   any semester) and the Add Module dropdown updates live.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Subject {
@@ -40,7 +42,7 @@ class Subject {
   final int order;
   final bool archived;
 
-  /// True for the built-in curriculum (protected).
+  /// True for the built-in BS Criminology curriculum (protected).
   final bool isCore;
 
   const Subject({
@@ -57,8 +59,9 @@ class Subject {
   factory Subject.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data() ?? {};
     final code = (data['code'] as String?) ?? '';
-    final core = (data['isCore'] as bool?) == true ||
-        CurriculumRepo._isCoreCode(code);
+    // Core is decided ONLY by the built-in list; the stored isCore flag is
+    // ignored so stale flags (e.g. on old ENG docs) cannot lock a subject.
+    final core = CurriculumRepo._isCoreCode(code);
     final archivedRaw = (data['archived'] as bool?) ?? false;
     return Subject(
       id: doc.id,
@@ -104,7 +107,7 @@ class CurriculumException implements Exception {
 //
 // Single shared access point for reading/writing subjects.
 //
-// CORE SUBJECTS (built-in curriculum: BS Criminology + English)
+// CORE SUBJECTS (built-in curriculum: BS Criminology only)
 //   • Always present: every stream merges the built-in curriculum with what is
 //     in Firestore, so the subjects show up even before any admin has opened
 //     Manage Curriculum.
@@ -112,7 +115,7 @@ class CurriculumException implements Exception {
 //   • Self-healing: ensureCoreSubjects() re-creates or repairs any core
 //     subject that is missing, archived or changed in Firestore.
 //
-// ADMIN-ADDED SUBJECTS
+// ADMIN-ADDED SUBJECTS (this includes ALL English subjects)
 //   • Stored only in Firestore, fully editable / archivable / deletable.
 //
 // Sorting is done on the device (year → semester → order → code), so NO
@@ -234,6 +237,16 @@ class CurriculumRepo {
         .toList());
   }
 
+  /// ACTIVE subjects that belong to one module subject group, e.g.
+  /// streamForGroup('ENG') -> ENG 1, ENG 2 … in curriculum order.
+  /// Nothing is hard-coded per group.
+  static Stream<List<Subject>> streamForGroup(String groupCode) {
+    final prefix = '${groupCode.trim().toLowerCase()} ';
+    return _col.snapshots().map((snap) => _parse(snap)
+        .where((s) => !s.archived && s.code.trim().toLowerCase().startsWith(prefix))
+        .toList());
+  }
+
   /// ARCHIVED subjects only (core subjects are never archived).
   static Stream<List<Subject>> streamArchived() {
     return _col
@@ -252,14 +265,15 @@ class CurriculumRepo {
       'This subject is part of the built-in curriculum '
       'and cannot be edited, archived, or deleted.';
 
-  /// Throws if the document [id] is a core subject.
+  /// Throws if the document [id] is a core subject. Core is decided by the
+  /// subject's CODE against the built-in list (not by the document id or a
+  /// stored flag), so old `core_ENG_*` documents are freely editable.
   static Future<void> _assertNotCore(String id) async {
-    if (id.startsWith('core_')) throw const CurriculumException(_coreMessage);
     final doc = await _col.doc(id).get();
     final data = doc.data();
     if (data == null) return;
     final code = (data['code'] as String?) ?? '';
-    if (data['isCore'] == true || _isCoreCode(code)) {
+    if (_isCoreCode(code)) {
       throw const CurriculumException(_coreMessage);
     }
   }
@@ -352,6 +366,7 @@ class CurriculumRepo {
       'description': d,
       'yearLevel': yearLevel,
       'semester': semester,
+      'isCore': false,
     };
     if (moved) update['order'] = _nextOrder(all, yearLevel, semester);
 
@@ -375,191 +390,4 @@ class CurriculumRepo {
     });
   }
 
-  /// Permanently removes an admin subject. Core subjects are rejected.
-  static Future<void> deleteSubject(String id) async {
-    await _assertNotCore(id);
-    await _col.doc(id).delete();
-  }
-
-  /// Kept for older callers. Overwrites every field from [subject].
-  /// Core subjects are rejected.
-  static Future<void> updateSubject(Subject subject) async {
-    await _assertNotCore(subject.id);
-    await _col.doc(subject.id).update(subject.toMap());
-  }
-
-  // ── Core curriculum maintenance ────────────────────────────────────────────
-  //
-  // Makes sure every built-in subject exists in Firestore, flagged isCore,
-  // not archived, and with its original details. Safe to call as often as you
-  // like (only writes when something is actually wrong).
-  // Admin only — wrap in try/catch for other accounts.
-  // ─────────────────────────────────────────────────────────────────────────
-
-  static Future<void> ensureCoreSubjects() async {
-    final snap = await _col.get();
-
-    final byCode = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
-    for (final d in snap.docs) {
-      final code = (d.data()['code'] as String?) ?? '';
-      byCode.putIfAbsent(_key(code), () => d);
-    }
-
-    final batch = FirebaseFirestore.instance.batch();
-    var changed = false;
-
-    for (final seed in _coreSeeds) {
-      final existing = byCode[_key(seed.code)];
-      final fresh = <String, dynamic>{
-        'code': seed.code,
-        'description': seed.description,
-        'yearLevel': seed.yearLevel,
-        'semester': seed.semester,
-        'order': seed.order,
-        'archived': false,
-        'isCore': true,
-      };
-
-      if (existing == null) {
-        // Fixed id, so it can never be duplicated.
-        batch.set(_col.doc(seed.id), fresh);
-        changed = true;
-        continue;
-      }
-
-      final d = existing.data();
-      final intact = d['isCore'] == true &&
-          d['archived'] != true &&
-          d['description'] == seed.description &&
-          d['yearLevel'] == seed.yearLevel &&
-          d['semester'] == seed.semester &&
-          (d['order'] as num?)?.toInt() == seed.order;
-
-      if (!intact) {
-        batch.update(existing.reference, {
-          ...fresh,
-          'archivedAt': FieldValue.delete(),
-        });
-        changed = true;
-      }
-    }
-
-    if (changed) await batch.commit();
-  }
-
-  /// Old name, kept so existing callers still compile.
-  static Future<void> migrateIfEmpty() => ensureCoreSubjects();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Core curriculum — the built-in subjects: the official BS Criminology
-// subjects plus the English subjects (ENG 1–4, one per year level). These are
-// permanent: they are always shown and can never be edited, archived or
-// deleted. To add more built-in subjects, add them here (admins can also add
-// extra subjects from the app; those stay removable).
-//
-// The English subjects use the code "ENG <n>" so they belong to the "ENG"
-// module subject group (see the note at the top of this file). That is what
-// gives ENG its own curriculum dropdown in Add Module, exactly like CRIM.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _SeedSubject {
-  final String code;
-  final String description;
-  const _SeedSubject(this.code, this.description);
-}
-
-class _SeedYear {
-  final String yearLabel;
-  final List<_SeedSubject> sem1;
-  final List<_SeedSubject> sem2;
-  const _SeedYear({
-    required this.yearLabel,
-    required this.sem1,
-    required this.sem2,
-  });
-}
-
-const List<_SeedYear> _seedCurriculum = [
-  _SeedYear(
-    yearLabel: '1st Year',
-    sem1: [
-      _SeedSubject('CRIM 1', 'Introduction to Criminology'),
-      _SeedSubject('ENG 1', 'English 1 – 1st Year'),
-    ],
-    sem2: [
-      _SeedSubject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
-      _SeedSubject('LEA 1', 'Law Enforcement Organization and Administration'),
-    ],
-  ),
-  _SeedYear(
-    yearLabel: '2nd Year',
-    sem1: [
-      _SeedSubject('CA 1', 'Institutional Corrections'),
-      _SeedSubject('CDI 1', 'Fundamentals of Investigation and Intelligence'),
-      _SeedSubject('CLJ 2', 'Human Rights Education'),
-      _SeedSubject('CRIM 2', 'Theories of Crime Causation'),
-      _SeedSubject('LEA 2', 'Comparative Models in Policing'),
-      _SeedSubject('ENG 2', 'English 2 – 2nd Year'),
-    ],
-    sem2: [
-      _SeedSubject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
-      _SeedSubject('CFLM 1', 'Character Formation, Nationalism and Patriotism'),
-      _SeedSubject('CLJ 3', 'Criminal Law (Book 1)'),
-      _SeedSubject('CRIM 3', 'Human Behavior and Victimology'),
-      _SeedSubject('FORENSIC 1', 'Forensic Photography'),
-      _SeedSubject('FORENSIC 2', 'Personal Identification Techniques'),
-      _SeedSubject('LEA 3', 'Introduction to Industrial Security Concepts'),
-    ],
-  ),
-  _SeedYear(
-    yearLabel: '3rd Year',
-    sem1: [
-      _SeedSubject('CA 2', 'Non-Institutional Corrections'),
-      _SeedSubject('CDI 3',
-          'Specialized Crime Investigation 2 with Simulation on Interrogation and Interview'),
-      _SeedSubject('CDI 4',
-          'Traffic Management and Accident Investigation with Driving'),
-      _SeedSubject(
-          'CDI 5', 'Technical English 1 (Technical Report Writing and Presentation)'),
-      _SeedSubject('CFLM 2',
-          'Character Formation with Leadership, Decision Making, Management and Administration'),
-      _SeedSubject('CLJ 4', 'Criminal Law (Book 2)'),
-      _SeedSubject('FORENSIC 3', 'Forensic Chemistry and Toxicology'),
-      _SeedSubject('FORENSIC 4', 'Questioned Documents Examination'),
-      _SeedSubject(
-          'LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
-      _SeedSubject('ENG 3', 'English 3 – 3rd Year'),
-    ],
-    sem2: [
-      _SeedSubject('CA 3', 'Therapeutic Modalities'),
-      _SeedSubject('CDI 6', 'Fire Protection and Arson Investigation'),
-      _SeedSubject('CDI 7', 'Vice and Drug Education and Control'),
-      _SeedSubject('CLJ 5', 'Evidence'),
-      _SeedSubject('CRIM 4', 'Professional Conduct and Ethical Standards'),
-      _SeedSubject('CRIM 5', 'Juvenile Delinquency and Juvenile Justice System'),
-      _SeedSubject('CRIM 6', 'Dispute Resolution and Crises/Incidents Management'),
-      _SeedSubject('CRIM 7',
-          'Criminological Research 1 (Research Methods with Applied Statistics)'),
-      _SeedSubject('FORENSIC 5', 'Lie Detection Techniques'),
-      _SeedSubject('FORENSIC 6', 'Forensic Ballistics'),
-    ],
-  ),
-  _SeedYear(
-    yearLabel: '4th Year',
-    sem1: [
-      _SeedSubject('CDI 8', 'Technical English 2 (Legal Forms)'),
-      _SeedSubject(
-          'CDI 9', 'Introduction to Cybercrime and Environmental Laws and Protection'),
-      _SeedSubject('CLJ 6', 'Criminal Procedure and Court Testimony'),
-      _SeedSubject('CP 1', 'Internship (On-the-Job Training 1)'),
-      _SeedSubject(
-          'CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
-      _SeedSubject('ENG 4', 'English 4 – 4th Year'),
-    ],
-    sem2: [
-      _SeedSubject('CP 2', 'Internship (On-the-Job Training 2)'),
-      _SeedSubject('ICRIM RC', 'Criminology Refresher Course'),
-    ],
-  ),
-];
+  ///
