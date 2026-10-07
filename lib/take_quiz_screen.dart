@@ -42,34 +42,27 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
 
   // ── Attempt-limit gate ──────────────────────────────────────────────────
   // Students get 2 free attempts (1 take + 1 retake) per review. Beyond
-  // that they need an instructor-approved entry in `retake_requests` —
-  // created from the Reviews screen — to get back in. This is the
-  // server-side enforcement; the Reviews screen already hides the button
-  // in this case, but this guards against stale UI state or someone
-  // navigating here directly.
+  // that they need an instructor-approved entry in `retake_requests`
+  // (created from the Reviews screen via "Request Approval to Retake").
   static const int kMaxFreeAttempts = 2;
   bool _accessChecked = false;
   bool _accessDenied = false;
+  // True when we could NOT verify the attempt count (network / Firestore
+  // error). We fail CLOSED: the student must retry instead of getting in.
+  bool _checkFailed = false;
   bool _usingApprovedRetake = false;
   int _attemptCount = 0;
 
-  // "time almost over" notification thresholds (in seconds).
-  // These are computed per-quiz from whatever time limit the instructor
-  // set (see _computeWarningThresholds), instead of being fixed values.
-  // That way a 3-minute quiz and a 2-hour quiz both get a meaningful
-  // "almost over" alert, scaled to their own duration.
   List<int> _warningThresholds = const [];
   final Set<int> _warningsShown = {};
 
-  // Whether the teacher allows students to see the correct answer
-  // on the Review Result screen. Defaults to true so quizzes created
-  // before this setting existed keep behaving the way they always did.
   bool _showCorrectAnswers = true;
 
   final PageController _pageController = PageController();
 
-  // ── Max content width ──────────────────────────────────────────────────────
   static const double _maxWidth = 720;
+
+  String get _docId => '${widget.quizId}_${widget.studentUid}';
 
   @override
   void initState() {
@@ -83,7 +76,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     await _checkAttemptAccess();
     if (!mounted) return;
 
-    if (_accessDenied) {
+    if (_accessDenied || _checkFailed) {
       setState(() {
         _isLoading = false;
         _accessChecked = true;
@@ -92,6 +85,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     }
 
     await _loadQuiz();
+    if (!mounted) return;
     if (widget.timeLimitMinutes != null && widget.timeLimitMinutes! > 0) {
       _timeLimitEnabled = true;
       _remainingSeconds = widget.timeLimitMinutes! * 60;
@@ -101,16 +95,26 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     if (mounted) setState(() => _accessChecked = true);
   }
 
-  // Counts how many times this student has attempted this quiz. If they've
-  // hit the free-attempt limit, checks `retake_requests` for an approved
-  // entry.
+  // Called by the Retry button on the "couldn't verify" screen.
+  void _retryInitialize() {
+    setState(() {
+      _isLoading = true;
+      _accessChecked = false;
+      _accessDenied = false;
+      _checkFailed = false;
+      _usingApprovedRetake = false;
+    });
+    _initialize();
+  }
+
+  // Counts how many times this student has attempted this quiz. A student
+  // has ONE result document per quiz (replaced on every retake) that stores
+  // an `attemptCount` field. Older results with no such field count as 1,
+  // so the attempt count is the larger of "documents found" and "highest
+  // attemptCount stored".
   //
-  // A student now has ONE result document per quiz (it is replaced on every
-  // retake), so the number of documents no longer equals the number of
-  // attempts. Instead each result stores an `attemptCount` field. Older
-  // results (saved before this change) have no such field and count as 1
-  // each, so the attempt count is the larger of "how many documents exist"
-  // and "the highest attemptCount stored".
+  // At 2 or more attempts, an instructor-approved entry in
+  // `retake_requests` is required.
   Future<void> _checkAttemptAccess() async {
     try {
       final resultsSnap = await FirebaseFirestore.instance
@@ -129,7 +133,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       if (_attemptCount >= kMaxFreeAttempts) {
         final reqDoc = await FirebaseFirestore.instance
             .collection('retake_requests')
-            .doc('${widget.quizId}_${widget.studentUid}')
+            .doc(_docId)
             .get();
         final status = reqDoc.data()?['status'] as String?;
         if (status == 'approved') {
@@ -139,19 +143,25 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
         }
       }
     } catch (e) {
-      // Fail open on a read error rather than locking a student out due to
-      // a transient network/Firestore issue.
-      _accessDenied = false;
+      // FAIL CLOSED: if we can't verify the attempt count, do not let the
+      // student in (otherwise a network error could bypass the limit).
+      debugPrint('attempt check failed: $e');
+      _checkFailed = true;
     }
   }
 
-  // Saves the result as ONE document per student + quiz. The document ID is
-  // fixed (quizId_studentUid), so a retake overwrites the previous result
-  // instead of creating a duplicate record. `.set()` without merge replaces
-  // the whole document, so the old answers/score are fully discarded.
-  Future<void> _saveResult(int score, Map<String, dynamic> answersMap) async {
-    final docId = '${widget.quizId}_${widget.studentUid}';
-    await FirebaseFirestore.instance.collection('quiz_results').doc(docId).set({
+  // Saves the result as ONE document per student + quiz (fixed ID, so a
+  // retake overwrites the previous result). If this attempt is an
+  // instructor-approved retake, the request is flipped to 'used' in the
+  // SAME batch, so either both writes succeed or neither does. That way a
+  // failed second write can never leave an 'approved' request behind and
+  // give the student unlimited retakes.
+  Future<void> _saveResultAndConsume(
+      int score, Map<String, dynamic> answersMap) async {
+    final db = FirebaseFirestore.instance;
+    final batch = db.batch();
+
+    batch.set(db.collection('quiz_results').doc(_docId), {
       'quizId':         widget.quizId,
       'quizTitle':      _quizData?['title'] ?? '',
       'studentUid':     widget.studentUid,
@@ -164,26 +174,19 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       'attemptCount':   _attemptCount + 1,
       'submittedAt':    FieldValue.serverTimestamp(),
     });
-  }
 
-  // Once an instructor-approved retake has actually been used (i.e. the
-  // student submitted this attempt), close it out so any attempt after
-  // this one requires a brand-new approval.
-  Future<void> _consumeApprovedRetakeIfNeeded() async {
-    if (!_usingApprovedRetake) return;
-    try {
-      await FirebaseFirestore.instance
-          .collection('retake_requests')
-          .doc('${widget.quizId}_${widget.studentUid}')
-          .set({
-        'status': 'used',
-        'usedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } catch (_) {
-      // Non-critical — worst case the student could ask for permission
-      // again sooner than intended; instructors can still see full history
-      // in Firestore directly.
+    if (_usingApprovedRetake) {
+      batch.set(
+        db.collection('retake_requests').doc(_docId),
+        {
+          'status': 'used',
+          'usedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
     }
+
+    await batch.commit();
   }
 
   @override
@@ -196,27 +199,17 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     super.dispose();
   }
 
-  // Picks "almost over" checkpoints relative to the instructor's own time
-  // limit, so every quiz gets at least one meaningful warning regardless of
-  // how long or short it is. Longer quizzes keep the familiar 5-min/1-min
-  // heads-up; shorter ones scale down proportionally instead of silently
-  // never crossing a fixed cutoff.
   List<int> _computeWarningThresholds(int totalSeconds) {
     if (totalSeconds > 600) {
-      // > 10 minutes: warn at 5 minutes and 1 minute left.
       return const [300, 60];
     } else if (totalSeconds > 120) {
-      // 2–10 minutes: warn at 1 minute and 30 seconds left.
       return const [60, 30];
     } else if (totalSeconds > 30) {
-      // 30s–2 minutes: warn at halfway and 10 seconds left.
       final half = (totalSeconds / 2).round();
       return [half, 10];
     } else if (totalSeconds > 10) {
-      // Very short quiz: a single halfway warning.
       return [(totalSeconds / 2).round()];
     }
-    // Too short to meaningfully warn (10s or less).
     return const [];
   }
 
@@ -242,7 +235,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       setState(() {
         _quizData  = data;
         _questions = questions;
-        // Read the teacher's toggle from the quiz document.
         _showCorrectAnswers = data?['showCorrectAnswer'] as bool? ?? true;
         _isLoading = false;
       });
@@ -253,6 +245,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       _questions[index]['type'] as String? ?? 'multiple_choice';
 
   void _startTimer() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingSeconds <= 0) {
         timer.cancel();
@@ -264,9 +257,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     });
   }
 
-  // Checks the countdown against the (per-quiz) warning thresholds and pops
-  // a floating SnackBar the first time it crosses one, so the student gets
-  // an explicit notification (not just a color change in the AppBar chip).
   void _maybeShowTimeWarning() {
     for (final threshold in _warningThresholds) {
       if (_remainingSeconds == threshold &&
@@ -301,61 +291,16 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
             duration: const Duration(seconds: 4),
           ),
         );
-        break; // only one threshold can match per tick
+        break;
       }
     }
   }
 
-  // Shows H:MM:SS when an hour or more remains (e.g. 1:59:52),
-  // and MM:SS below one hour (e.g. 59:52).
   String _formatTime(int seconds) {
     final h = seconds ~/ 3600;
     final m = ((seconds % 3600) ~/ 60).toString().padLeft(2, '0');
     final s = (seconds % 60).toString().padLeft(2, '0');
     return h > 0 ? '$h:$m:$s' : '$m:$s';
-  }
-
-  Future<void> _autoSubmit() async {
-    if (_isSubmitted || _isSubmitting) return;
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('⏰ Time is up! Submitting your answers...'),
-      backgroundColor: Colors.red,
-      behavior: SnackBarBehavior.floating,
-    ));
-    for (final entry in _textControllers.entries) {
-      _answers[entry.key] = entry.value.text.trim();
-    }
-    setState(() => _isSubmitting = true);
-    final score = _calculateScore();
-    final answersMap = <String, dynamic>{};
-    for (int i = 0; i < _questions.length; i++) {
-      final type = _questionType(i);
-      if (type == 'identification' || type == 'document') {
-        answersMap[i.toString()] = _textControllers[i]?.text.trim() ?? '';
-      } else {
-        answersMap[i.toString()] = _answers[i];
-      }
-    }
-    try {
-      await _saveResult(score, answersMap);
-      await _consumeApprovedRetakeIfNeeded();
-      if (mounted) {
-        setState(() {
-          _score        = score;
-          _isSubmitted  = true;
-          _isSubmitting = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: const Text('Failed to submit. Please try again.'),
-          backgroundColor: Colors.red.shade700,
-        ));
-      }
-    }
   }
 
   bool _isAnswered(int index) {
@@ -398,9 +343,83 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     return score;
   }
 
-  Future<void> _submitQuiz() async {
+  Map<String, dynamic> _collectAnswersMap() {
+    final answersMap = <String, dynamic>{};
+    for (int i = 0; i < _questions.length; i++) {
+      final type = _questionType(i);
+      if (type == 'identification' || type == 'document') {
+        answersMap[i.toString()] = _textControllers[i]?.text.trim() ?? '';
+      } else {
+        answersMap[i.toString()] = _answers[i];
+      }
+    }
+    return answersMap;
+  }
+
+  // ── Single submit path (used by both manual submit and time-up) ────────
+  // Guarded so it can only run once per attempt: a time-up auto-submit
+  // can't double-save while the confirm dialog is open.
+  Future<void> _finishAttempt() async {
+    if (_isSubmitted || _isSubmitting) return;
+    _timer?.cancel();
+
     for (final entry in _textControllers.entries) {
       _answers[entry.key] = entry.value.text.trim();
+    }
+
+    if (mounted) setState(() => _isSubmitting = true);
+
+    final score = _calculateScore();
+    final answersMap = _collectAnswersMap();
+
+    try {
+      await _saveResultAndConsume(score, answersMap);
+      if (mounted) {
+        setState(() {
+          _score        = score;
+          _isSubmitted  = true;
+          _isSubmitting = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('submit failed: $e');
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+        // Resume the countdown if there is still time left.
+        if (_timeLimitEnabled && _remainingSeconds > 0) _startTimer();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed to submit. Please try again.\n$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    }
+  }
+
+  Future<void> _autoSubmit() async {
+    if (_isSubmitted || _isSubmitting) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('⏰ Time is up! Submitting your answers...'),
+      backgroundColor: Colors.red,
+      behavior: SnackBarBehavior.floating,
+    ));
+    await _finishAttempt();
+  }
+
+  Future<void> _submitQuiz() async {
+    if (_isSubmitted || _isSubmitting) return;
+
+    for (final entry in _textControllers.entries) {
+      _answers[entry.key] = entry.value.text.trim();
+    }
+
+    final timeIsUp = _timeLimitEnabled && _remainingSeconds <= 0;
+
+    // If time already ran out (e.g. the auto-submit failed), let the
+    // student retry without being blocked by unanswered questions.
+    if (timeIsUp) {
+      await _finishAttempt();
+      return;
     }
 
     if (_answeredCount < _questions.length) {
@@ -442,40 +461,10 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
 
     if (confirm != true) return;
 
-    setState(() => _isSubmitting = true);
+    // The timer may have auto-submitted while the dialog was open.
+    if (_isSubmitted || _isSubmitting) return;
 
-    final score = _calculateScore();
-
-    final answersMap = <String, dynamic>{};
-    for (int i = 0; i < _questions.length; i++) {
-      final type = _questionType(i);
-      if (type == 'identification' || type == 'document') {
-        answersMap[i.toString()] = _textControllers[i]?.text.trim() ?? '';
-      } else {
-        answersMap[i.toString()] = _answers[i];
-      }
-    }
-
-    try {
-      await _saveResult(score, answersMap);
-      await _consumeApprovedRetakeIfNeeded();
-
-      if (mounted) {
-        setState(() {
-          _score        = score;
-          _isSubmitted  = true;
-          _isSubmitting = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: const Text('Failed to submit. Please try again.'),
-          backgroundColor: Colors.red.shade700,
-        ));
-      }
-    }
+    await _finishAttempt();
   }
 
   @override
@@ -487,6 +476,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
             child: CircularProgressIndicator(color: Color(0xFF1A237E))),
       );
     }
+    if (_checkFailed) return _buildCheckFailedScreen();
     if (_accessDenied) return _buildAccessDeniedScreen();
     if (_isSubmitted) return _buildResultScreen();
 
@@ -558,7 +548,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       ),
       body: Column(
         children: [
-          // ── Progress bar (full width intentionally) ──────────────────────
           LinearProgressIndicator(
             value: _questions.isEmpty
                 ? 0
@@ -578,7 +567,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
                 final type = q['type'] as String? ?? 'multiple_choice';
                 return SingleChildScrollView(
                   padding: const EdgeInsets.all(20),
-                  // ── FIX: constrain content width ─────────────────────────
                   child: Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: _maxWidth),
@@ -641,8 +629,78 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
     );
   }
 
-  // Shown instead of the quiz when a student has hit the 2-attempt limit
-  // and doesn't have instructor approval yet.
+  // Shown when the attempt count could not be verified (network error).
+  Widget _buildCheckFailedScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F2F8),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1A237E),
+        foregroundColor: Colors.white,
+        title: const Text('Could Not Open Review',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Card(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            elevation: 3,
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.wifi_off_rounded,
+                      size: 56, color: Colors.orange.shade800),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Couldn\'t verify your attempts.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1A237E)),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Please check your internet connection and try again.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 13, color: Colors.black54, height: 1.5),
+                  ),
+                  const SizedBox(height: 22),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Back'),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton.icon(
+                        onPressed: _retryInitialize,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Retry'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1A237E),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Shown when a student has used both attempts and has no approval.
   Widget _buildAccessDeniedScreen() {
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F8),
@@ -668,7 +726,7 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
                       size: 56, color: Color(0xFF6A1B9A)),
                   const SizedBox(height: 16),
                   const Text(
-                    'You\'ve used both attempts for this review.',
+                    'You\'ve used both attempts (2/2) for this review.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 16,
@@ -677,9 +735,9 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'To try again, request permission from your instructor '
-                    'on the Reviews screen. You\'ll be able to retake it '
-                    'once they approve your request.',
+                    'To try again, tap "Request Approval to Retake" on the '
+                    'Reviews screen. You\'ll be able to retake it once your '
+                    'instructor approves your request.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 13, color: Colors.black54, height: 1.5),
@@ -994,7 +1052,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
           ),
         ],
       ),
-      // ── FIX: constrain nav bar content width ─────────────────────────────
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: _maxWidth),
@@ -1091,7 +1148,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        // ── FIX: constrain result screen content width ────────────────────
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: _maxWidth),
@@ -1264,12 +1320,6 @@ class _TakeQuizScreenState extends State<TakeQuizScreen> {
                                         : Colors.red.shade700,
                                   ),
                                 ),
-                                // Only reveal the correct answer text
-                                // when the teacher has allowed it AND the
-                                // student got the question wrong. If the
-                                // student's own answer was already correct,
-                                // there's nothing extra to reveal — their
-                                // answer line above already shows it in green.
                                 if (!isCorrect && _showCorrectAnswers)
                                   Text(
                                     'Correct answer: $correctAnswer',
