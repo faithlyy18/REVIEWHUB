@@ -485,7 +485,7 @@ const List<_SeedYear> _seedCurriculum = [
     yearLabel: '1st Year',
     sem1: [
       _SeedSubject('CRIM 1', 'Introduction to Criminology'),
-      _SeedSubject('ENG 1', 'English 1 – 1st Year'),
+     
     ],
     sem2: [
       _SeedSubject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
@@ -500,7 +500,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('CLJ 2', 'Human Rights Education'),
       _SeedSubject('CRIM 2', 'Theories of Crime Causation'),
       _SeedSubject('LEA 2', 'Comparative Models in Policing'),
-      _SeedSubject('ENG 2', 'English 2 – 2nd Year'),
+     
     ],
     sem2: [
       _SeedSubject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
@@ -529,7 +529,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('FORENSIC 4', 'Questioned Documents Examination'),
       _SeedSubject(
           'LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
-      _SeedSubject('ENG 3', 'English 3 – 3rd Year'),
+      
     ],
     sem2: [
       _SeedSubject('CA 3', 'Therapeutic Modalities'),
@@ -555,7 +555,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('CP 1', 'Internship (On-the-Job Training 1)'),
       _SeedSubject(
           'CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
-      _SeedSubject('ENG 4', 'English 4 – 4th Year'),
+      
     ],
     sem2: [
       _SeedSubject('CP 2', 'Internship (On-the-Job Training 2)'),
