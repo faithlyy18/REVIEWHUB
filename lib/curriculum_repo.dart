@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 //
 // Firestore collection: 'subjects'
 // Each document = one subject, with fields:
-//   code        (e.g. 'CRIM 1')
+//   code        (e.g. 'CRIM 1', 'ENG 1')
 //   description (e.g. 'Introduction to Criminology')
 //   yearLevel   (e.g. '1st Year')
 //   semester    ('1st Semester' | '2nd Semester')
@@ -15,12 +15,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 //   archived    (bool, default false — archived subjects are hidden from
 //                every picker/viewer but can be restored by an admin)
 //   archivedAt  (server timestamp, only present while archived)
-//   isCore      (bool — true for the official BS Criminology curriculum.
-//                Core subjects can NEVER be edited, archived or deleted.)
+//   isCore      (bool — true for the built-in curriculum (BS Criminology
+//                subjects + the English subjects ENG 1–4). Core subjects can
+//                NEVER be edited, archived or deleted.)
 //
 // A subject is also treated as core when its code matches one of the codes in
 // the built-in curriculum (_seedCurriculum), even if the Firestore document
 // has no `isCore` flag yet.
+//
+// HOW MODULE SUBJECTS (CRIM, CLJ, ENG …) USE THIS COLLECTION
+//   A curriculum subject belongs to a module subject group when its code
+//   starts with the group code followed by a space: "CRIM 1" -> CRIM,
+//   "ENG 2" -> ENG. That is the ONLY link, so any group that has curriculum
+//   subjects named "<CODE> <number>" automatically gets its own curriculum
+//   dropdown in Add Module. Nothing is hard-coded per group.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Subject {
@@ -32,7 +40,7 @@ class Subject {
   final int order;
   final bool archived;
 
-  /// True for the official BS Criminology curriculum (protected).
+  /// True for the built-in curriculum (protected).
   final bool isCore;
 
   const Subject({
@@ -96,7 +104,7 @@ class CurriculumException implements Exception {
 //
 // Single shared access point for reading/writing subjects.
 //
-// CORE SUBJECTS (official BS Criminology curriculum)
+// CORE SUBJECTS (built-in curriculum: BS Criminology + English)
 //   • Always present: every stream merges the built-in curriculum with what is
 //     in Firestore, so the subjects show up even before any admin has opened
 //     Manage Curriculum.
@@ -241,7 +249,7 @@ class CurriculumRepo {
   // ── Writes (admin only — enforce in the UI layer AND Firestore rules) ─────
 
   static const String _coreMessage =
-      'This subject is part of the official BS Criminology curriculum '
+      'This subject is part of the built-in curriculum '
       'and cannot be edited, archived, or deleted.';
 
   /// Throws if the document [id] is a core subject.
@@ -382,9 +390,9 @@ class CurriculumRepo {
 
   // ── Core curriculum maintenance ────────────────────────────────────────────
   //
-  // Makes sure every official BS Criminology subject exists in Firestore,
-  // flagged isCore, not archived, and with its original details. Safe to call
-  // as often as you like (only writes when something is actually wrong).
+  // Makes sure every built-in subject exists in Firestore, flagged isCore,
+  // not archived, and with its original details. Safe to call as often as you
+  // like (only writes when something is actually wrong).
   // Admin only — wrap in try/catch for other accounts.
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -444,10 +452,15 @@ class CurriculumRepo {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Core curriculum — the official BS Criminology subjects. These are
+// Core curriculum — the built-in subjects: the official BS Criminology
+// subjects plus the English subjects (ENG 1–4, one per year level). These are
 // permanent: they are always shown and can never be edited, archived or
-// deleted. To add more official subjects, add them here (admins can also add
+// deleted. To add more built-in subjects, add them here (admins can also add
 // extra subjects from the app; those stay removable).
+//
+// The English subjects use the code "ENG <n>" so they belong to the "ENG"
+// module subject group (see the note at the top of this file). That is what
+// gives ENG its own curriculum dropdown in Add Module, exactly like CRIM.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SeedSubject {
@@ -472,6 +485,7 @@ const List<_SeedYear> _seedCurriculum = [
     yearLabel: '1st Year',
     sem1: [
       _SeedSubject('CRIM 1', 'Introduction to Criminology'),
+      _SeedSubject('ENG 1', 'English 1 – 1st Year'),
     ],
     sem2: [
       _SeedSubject('CLJ 1', 'Introduction to Phil. Criminal Justice System'),
@@ -486,6 +500,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('CLJ 2', 'Human Rights Education'),
       _SeedSubject('CRIM 2', 'Theories of Crime Causation'),
       _SeedSubject('LEA 2', 'Comparative Models in Policing'),
+      _SeedSubject('ENG 2', 'English 2 – 2nd Year'),
     ],
     sem2: [
       _SeedSubject('CDI 2', 'Specialized Crime Investigation 1 with Legal Medicine'),
@@ -514,6 +529,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('FORENSIC 4', 'Questioned Documents Examination'),
       _SeedSubject(
           'LEA 4', 'Law Enforcement Operations and Planning with Crime Mapping'),
+      _SeedSubject('ENG 3', 'English 3 – 3rd Year'),
     ],
     sem2: [
       _SeedSubject('CA 3', 'Therapeutic Modalities'),
@@ -539,6 +555,7 @@ const List<_SeedYear> _seedCurriculum = [
       _SeedSubject('CP 1', 'Internship (On-the-Job Training 1)'),
       _SeedSubject(
           'CRIM 8', 'Criminological Research 2 (Thesis Writing and Presentation)'),
+      _SeedSubject('ENG 4', 'English 4 – 4th Year'),
     ],
     sem2: [
       _SeedSubject('CP 2', 'Internship (On-the-Job Training 2)'),

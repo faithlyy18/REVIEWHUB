@@ -32,11 +32,15 @@ import 'curriculum_repo.dart';
 // Modules keep referencing their subject through `cluster: <code>`.
 //
 // Each module can ALSO be linked to one curriculum subject, e.g. a CDI
-// module is linked to "CDI 3". This is stored on the module as
-//   subject        (e.g. 'CDI 3')
+// module is linked to "CDI 3", an English module to "ENG 1". This is stored
+// on the module as
+//   subject        (e.g. 'CDI 3', 'ENG 1')
 //   subjectLabel   (e.g. 'Specialized Crime Investigation 2 …')
 // A curriculum subject belongs to a cluster when its code starts with the
-// cluster code followed by a space ("CDI 3" belongs to "CDI").
+// cluster code followed by a space ("CDI 3" belongs to "CDI", "ENG 1" belongs
+// to "ENG"). This is fully dynamic: ANY cluster whose curriculum has subjects
+// named "<CODE> <number>" gets its own curriculum dropdown in Add Module.
+// Nothing is hard-coded per cluster.
 //
 // FILE TYPE: every module card shows a file-type badge (PPTX, DOCX, PDF …).
 // New uploads save a `fileType` field (e.g. 'pptx'). Older modules that have no
@@ -55,13 +59,15 @@ import 'curriculum_repo.dart';
 // the badge and the previous one loses it automatically.
 //
 // ADMIN / INSTRUCTOR SIDE: TeacherModulesScreen navigates
-//   Subject Category (CDI, CLJ …) -> Individual Uploaded Modules
+//   Subject Category (CDI, CLJ, ENG …) -> Individual Uploaded Modules
 // Modules are grouped AUTOMATICALLY by their `cluster` code (falling back to
 // the first word of `subject`, e.g. "CDI 3" -> "CDI"). Uploading a new module
 // never creates a new category by itself: it simply joins the existing group.
+// Inside a category the modules are further grouped by their SPECIFIC
+// curriculum subject (e.g. ENG 1, ENG 2 …) — see _kGroupBySubject.
 //
 // STUDENT SIDE: StudentModulesScreen navigates
-//   Subject category -> Modules (newest first) -> Read Module
+//   Subject category -> Modules (grouped by specific subject) -> Read Module
 //
 // ALL subjects (including the 7 starters: CRIM, CLJ, CDI, FORENSIC, LEA, CA,
 // ENG) can be edited and archived by the admin. Archived subjects stay in the
@@ -80,7 +86,21 @@ const String _kModuleSubjectsCol = 'moduleSubjects';
 ///                    already shows its Year / Semester / Subject pills.
 ///   true           : keep the "2nd Year • 1st Semester" group headers, with
 ///                    the newest upload first INSIDE each group.
+/// (Ignored while [_kGroupBySubject] is true — the subject headers already
+/// carry the year / semester.)
 const bool _kGroupByYearSemester = false;
+
+/// Inside a subject category (teacher AND student pages), group the modules
+/// under their SPECIFIC curriculum subject, e.g. an "ENG 1" module appears
+/// under the "ENG 1" header and a "CRIM 2" module under "CRIM 2".
+///   • Groups follow the curriculum order (ENG 1 → ENG 2 → …).
+///   • Newest upload first INSIDE each group.
+///   • The NEW badge still goes only to the single newest module overall.
+///   • Teacher side: modules with no curriculum subject (old uploads) go in a
+///     "No specific subject" group at the bottom.
+/// Applies to every category the same way. Set to false to go back to the
+/// previous flat, newest-first list.
+const bool _kGroupBySubject = true;
 
 class ModuleCluster {
   final String id; // Firestore doc id
@@ -136,8 +156,8 @@ Color _colorForCode(String code) =>
 IconData _iconForCode(String code) =>
     _iconPalette[code.hashCode.abs() % _iconPalette.length];
 
-/// True when the curriculum subject [subjectCode] (e.g. "CDI 3") belongs to
-/// the module cluster [clusterCode] (e.g. "CDI").
+/// True when the curriculum subject [subjectCode] (e.g. "CDI 3" or "ENG 1")
+/// belongs to the module cluster [clusterCode] (e.g. "CDI" or "ENG").
 bool _subjectBelongsToCluster(String subjectCode, String clusterCode) {
   final s = subjectCode.trim().toUpperCase();
   final c = clusterCode.trim().toUpperCase();
@@ -853,15 +873,17 @@ class _EditSubjectDialogState extends State<_EditSubjectDialog> {
 // ─────────────────────────────────────────────────────────────────────────────
 // TeacherModulesScreen (shared by Instructor + Admin accountTypes)
 //
-// Flow:  Subject categories (CDI, CLJ, CRIM …)  ->  that subject's modules
+// Flow:  Subject categories (CDI, CLJ, ENG …)  ->  that subject's modules
 //
 //   • Categories are built automatically from each module's `cluster` code
 //     (fallback: first word of its `subject`, e.g. "CDI 3" -> "CDI").
 //   • Only categories that currently have modules are listed, each with its
 //     module count. A new upload joins its existing category automatically.
-//   • Inside a category the modules are sorted by UPLOAD DATE, newest first.
-//     Modules with the same (or no) date fall back to numeric subject order
-//     (CDI 1 -> CDI 2 -> … -> CDI 10), then by title.
+//   • Inside a category the modules are grouped by their SPECIFIC curriculum
+//     subject (ENG 1, ENG 2 … / CDI 1, CDI 2 …) when _kGroupBySubject is
+//     true. Groups follow the curriculum order, and inside each group the
+//     modules are sorted by UPLOAD DATE, newest first. Modules with the same
+//     (or no) date fall back to numeric subject order, then by title.
 //   • Every module card keeps Preview Module + Archive and shows its
 //     "Uploaded <date>" chip.
 //   • Only the single most recently uploaded module shows the NEW badge.
@@ -1205,6 +1227,10 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
 
   // ── Page 2: the modules inside one category ─────────────────────────────
 
+  /// The curriculum subject code of a module doc ('' when it has none).
+  static String _subjectOf(QueryDocumentSnapshot d) =>
+      ((d.data() as Map<String, dynamic>)['subject'] as String? ?? '').trim();
+
   Widget _buildCategoryPage(String code, List<QueryDocumentSnapshot> items,
       List<ModuleCluster> clusters, String? newestId) {
     final color = _colorForCode(code);
@@ -1213,6 +1239,35 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
     // Newest upload first.
     final sorted = [...items]..sort((a, b) => _compareByUpload(
         a.data() as Map<String, dynamic>, b.data() as Map<String, dynamic>));
+
+    // Group by the SPECIFIC curriculum subject (ENG 1, ENG 2 … / CRIM 1 …).
+    // Groups follow numeric curriculum order; modules with no subject go last.
+    // Newest-first order is kept inside every group (groups are built by
+    // filtering the already-sorted list, so no re-sorting is needed).
+    var ordered = sorted;
+    final groupCounts = <String, int>{};
+    final groupLabels = <String, String>{};
+    if (_kGroupBySubject) {
+      for (final d in sorted) {
+        final k = _subjectOf(d).toUpperCase();
+        groupCounts[k] = (groupCounts[k] ?? 0) + 1;
+        final l = ((d.data() as Map<String, dynamic>)['subjectLabel']
+                    as String? ??
+                '')
+            .trim();
+        if (l.isNotEmpty) groupLabels.putIfAbsent(k, () => l);
+      }
+      final keys = groupCounts.keys.toList()
+        ..sort((a, b) {
+          if (a.isEmpty != b.isEmpty) return a.isEmpty ? 1 : -1;
+          final n = _firstNumber(a).compareTo(_firstNumber(b));
+          return n != 0 ? n : a.compareTo(b);
+        });
+      ordered = [
+        for (final k in keys)
+          ...sorted.where((d) => _subjectOf(d).toUpperCase() == k),
+      ];
+    }
 
     return Column(
       children: [
@@ -1245,7 +1300,7 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
                 Text(label,
                     style: TextStyle(fontSize: 13, color: Colors.grey[700])),
               const SizedBox(height: 4),
-              Text(_countLabel(sorted.length),
+              Text(_countLabel(ordered.length),
                   style: TextStyle(fontSize: 12, color: Colors.grey[600])),
             ],
           ),
@@ -1254,18 +1309,36 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
         Expanded(
           child: ListView.separated(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
-            itemCount: sorted.length,
+            itemCount: ordered.length,
             separatorBuilder: (_, __) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
-              final doc = sorted[index];
+              final doc = ordered[index];
               final data = doc.data() as Map<String, dynamic>;
               final subjectCode = (data['subject'] as String? ?? '').trim();
+              final key = subjectCode.toUpperCase();
+
+              // A new subject group starts here.
+              final showHeader = _kGroupBySubject &&
+                  (index == 0 ||
+                      _subjectOf(ordered[index - 1]).toUpperCase() != key);
 
               return Column(
                 key: ValueKey(doc.id),
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (subjectCode.isNotEmpty)
+                  if (showHeader)
+                    _subjectGroupHeader(
+                      color: color,
+                      title: subjectCode.isEmpty
+                          ? 'No specific subject'
+                          : (groupLabels[key] != null
+                              ? '$subjectCode — ${groupLabels[key]}'
+                              : subjectCode),
+                      count: groupCounts[key] ?? 1,
+                    ),
+                  // With group headers the subject is already shown above,
+                  // so the per-card subject chip is only used in flat mode.
+                  if (!_kGroupBySubject && subjectCode.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(left: 2, bottom: 6),
                       child: Container(
@@ -1304,6 +1377,52 @@ class _TeacherModulesScreenState extends State<TeacherModulesScreen> {
       ],
     );
   }
+}
+
+/// Header shown above each specific-subject group (e.g. "ENG 1 — English 1 –
+/// 1st Year · 2 Modules") on the teacher and student category pages.
+Widget _subjectGroupHeader({
+  required Color color,
+  required String title,
+  String? subtitle,
+  required int count,
+}) {
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(2, 6, 2, 10),
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.bookmark_rounded, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: color)),
+                if (subtitle != null && subtitle.isNotEmpty)
+                  Text(subtitle,
+                      style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text('$count ${count == 1 ? 'Module' : 'Modules'}',
+              style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+        ],
+      ),
+    ),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1593,7 +1712,7 @@ class _ManageModuleSubjectsScreenState
 // ─────────────────────────────────────────────────────────────────────────────
 // StudentModulesScreen  (REDESIGNED v2)
 //
-// Flow: Subject category (CLJ, CDI, CRIM …) -> modules -> Read Module
+// Flow: Subject category (CLJ, CDI, CRIM, ENG …) -> modules -> Read Module
 //
 // Data mapping (uses existing fields, no Firestore changes):
 //   Category          = module.cluster            (e.g. 'CLJ')
@@ -1605,10 +1724,12 @@ class _ManageModuleSubjectsScreenState
 //   • Placeholder titles like "CLJ(0)" or "()" are hidden.
 //   • Duplicates (same subject + same title) are shown once.
 //
-// ORDER: modules are listed by UPLOAD DATE, newest first (see
-// _kGroupByYearSemester at the top of this file for the optional
-// Year/Semester group headers). Ties fall back to curriculum subject order,
-// then the number in the title, then A–Z.
+// ORDER: when _kGroupBySubject is true the modules are grouped under their
+// specific curriculum subject (ENG 1, ENG 2 … in curriculum order) with the
+// newest upload first INSIDE each group. When it is false the list is one flat
+// list by UPLOAD DATE, newest first (see _kGroupByYearSemester at the top of
+// this file for the optional Year/Semester group headers). Ties fall back to
+// curriculum subject order, then the number in the title, then A–Z.
 //
 // NEW BADGE: only the single most recently uploaded module (among the modules
 // that are actually shown) carries the NEW badge.
@@ -1729,6 +1850,25 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
         .indexOf(a.subject.semester)
         .compareTo(CurriculumRepo.semesters.indexOf(b.subject.semester));
     if (s != 0) return s;
+    return _cmpByUpload(a, b);
+  }
+
+  /// Only used when _kGroupBySubject is true: curriculum order of the
+  /// specific subject (year, semester, subject order, code), then newest
+  /// upload first inside each subject.
+  static int _cmpBySubject(_ModEntry a, _ModEntry b) {
+    final y = CurriculumRepo.yearLevels
+        .indexOf(a.subject.yearLevel)
+        .compareTo(CurriculumRepo.yearLevels.indexOf(b.subject.yearLevel));
+    if (y != 0) return y;
+    final s = CurriculumRepo.semesters
+        .indexOf(a.subject.semester)
+        .compareTo(CurriculumRepo.semesters.indexOf(b.subject.semester));
+    if (s != 0) return s;
+    final o = a.subject.order.compareTo(b.subject.order);
+    if (o != 0) return o;
+    final c = a.subject.code.compareTo(b.subject.code);
+    if (c != 0) return c;
     return _cmpByUpload(a, b);
   }
 
@@ -1866,7 +2006,7 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
     );
   }
 
-  // ── Category page: modules, newest upload first ──────────────────────────
+  // ── Category page: modules grouped by specific subject ───────────────────
 
   Widget _moduleGroups(List<_ModEntry> list, String? newestId) {
     if (list.isEmpty) {
@@ -1881,15 +2021,43 @@ class _StudentModulesScreenState extends State<StudentModulesScreen> {
       counts[groupOf(e)] = (counts[groupOf(e)] ?? 0) + 1;
     }
 
-    // Default: the list is already newest-first. With group headers on, it is
-    // re-ordered Year -> Semester -> newest first so each header appears once.
-    final ordered =
-        _kGroupByYearSemester ? ([...list]..sort(_cmpGrouped)) : list;
+    // Module counts per specific subject (ENG 1, ENG 2 …).
+    final subjectCounts = <String, int>{};
+    for (final e in list) {
+      final k = e.subject.code.trim().toUpperCase();
+      subjectCounts[k] = (subjectCounts[k] ?? 0) + 1;
+    }
+
+    // Order of the list:
+    //   • _kGroupBySubject    : curriculum order of the specific subject, then
+    //                           newest first inside each subject.
+    //   • _kGroupByYearSemester: Year -> Semester -> newest first.
+    //   • otherwise           : the list is already newest-first.
+    final List<_ModEntry> ordered;
+    if (_kGroupBySubject) {
+      ordered = [...list]..sort(_cmpBySubject);
+    } else if (_kGroupByYearSemester) {
+      ordered = [...list]..sort(_cmpGrouped);
+    } else {
+      ordered = list;
+    }
 
     final children = <Widget>[];
     String? current;
+    String? currentSubject;
     for (final e in ordered) {
-      if (_kGroupByYearSemester) {
+      if (_kGroupBySubject) {
+        final k = e.subject.code.trim().toUpperCase();
+        if (k != currentSubject) {
+          currentSubject = k;
+          children.add(_subjectGroupHeader(
+            color: _colorForCode(e.cluster),
+            title: '${e.subject.code} — ${e.subject.description}',
+            subtitle: groupOf(e),
+            count: subjectCounts[k] ?? 1,
+          ));
+        }
+      } else if (_kGroupByYearSemester) {
         final g = groupOf(e);
         if (g != current) {
           current = g;
@@ -2064,7 +2232,7 @@ class _NavCard extends StatelessWidget {
 //
 // Opened when a student taps a subject in the Subjects (curriculum) tab.
 // Matches modules by the curriculum subject code (module.subject == code),
-// so "CDI 1" only ever shows CDI 1 modules.
+// so "CDI 1" only ever shows CDI 1 modules and "ENG 1" only ENG 1 modules.
 //   • Has modules  -> Year/Semester header + pills + the usual module cards,
 //                     newest upload first (Read Module and the confirmation
 //                     dialog unchanged).
@@ -3438,13 +3606,16 @@ class _SmallActionButton extends StatelessWidget {
 // or restores while this sheet is open shows up right away. Instructors can
 // only choose from it; there is no add/manage link here.
 //
-// After choosing a subject group (e.g. CDI), a "Curriculum subject" dropdown
-// lists that group's curriculum subjects (CDI 1 … CDI 9) from the LIVE
-// curriculum. It is required when the group has curriculum subjects, and
-// hidden when it has none (e.g. ENG or a custom subject).
+// After choosing a subject group (e.g. CDI or ENG), a "Curriculum subject"
+// dropdown lists that group's curriculum subjects (CDI 1 … CDI 9, or
+// ENG 1 … ENG 4) from the LIVE curriculum. It is required when the group has
+// curriculum subjects, and hidden when it has none (e.g. a custom subject
+// that has no "<CODE> <number>" curriculum subjects yet).
 //
 // The chosen group is saved as `cluster`, which is exactly what the Modules
 // page groups by — so a new CDI upload lands in the existing CDI category.
+// The chosen curriculum subject is saved as `subject`, which is what the
+// pages use to group the module under its specific subject (e.g. ENG 1).
 //
 // The chosen file's extension is saved as `fileType` (e.g. 'pptx') and drives
 // the file-type badge on the module cards. The upload time is saved as
@@ -3751,8 +3922,8 @@ class _UploadModuleSheetState extends State<_UploadModuleSheet> {
     );
   }
 
-  /// Dropdown of the live curriculum subjects (CDI 1 … CDI 9) that belong to
-  /// the chosen subject group. Hidden when the group has none.
+  /// Dropdown of the live curriculum subjects (CDI 1 … CDI 9, ENG 1 … ENG 4)
+  /// that belong to the chosen subject group. Hidden when the group has none.
   Widget _buildCurriculumSubjectPicker() {
     return StreamBuilder<List<Subject>>(
       stream: CurriculumRepo.streamAll(),
