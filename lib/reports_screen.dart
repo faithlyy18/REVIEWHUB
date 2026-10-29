@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -23,6 +24,21 @@ import 'package:printing/printing.dart';
 ///
 /// New submissions appear automatically (snapshots), no refresh needed.
 ///
+/// OFFICIAL BISU HEADER (panelist requirement)
+///   • On screen: the Reports page shows the official Bohol Island State
+///     University letterhead (seal, "Republic of the Philippines", the
+///     university name, address and values line) right under the blue bar.
+///     The blue bar keeps the back button and the "Reports" title.
+///   • In the PDF: the same letterhead is printed at the top of the first
+///     page (a short one-line header repeats on the following pages).
+///   • The seal image is read from [_bisuLogoAsset]. If the file is missing
+///     the header still works (text only) — no logo is invented.
+///
+/// VIEW FIRST, THEN PRINT (panelist requirement)
+///   • "Preview" opens the report exactly as it will be printed (A4, with the
+///     BISU header). From the preview page the user can Print or Save as PDF.
+///   • "Print" still opens the print dialog directly, as before.
+///
 /// DAILY REVIEW REPORT (sales-inventory style)
 ///   The results are no longer one long list. They are grouped PER DAY, like
 ///   a daily sales report:
@@ -34,10 +50,9 @@ import 'package:printing/printing.dart';
 ///     Only one day is open at a time; tap Hide to close it.
 ///   • A TOTAL row at the bottom sums everything currently shown.
 ///   • Period chips: All time, Today, Last 7 days, This month, Custom range.
-///   • The Print button prints (or saves as PDF) the daily summary, the
-///     TOTAL row and the per-day records of whatever is currently shown, so
-///     it always matches the subject / review / search / period / status
-///     filters on screen.
+///   • Preview / Print use the daily summary, the TOTAL row and the per-day
+///     records of whatever is currently shown, so they always match the
+///     subject / review / search / period / status filters on screen.
 ///   • "Students Who Took" counts UNIQUE students for that day. The TOTAL row
 ///     counts each student once overall, so it can be lower than the sum of
 ///     the days.
@@ -73,10 +88,15 @@ import 'package:printing/printing.dart';
 /// result belongs to), never from the student's attempt, so it is the
 /// instructor who uploaded that specific review.
 ///
-/// Requires the `pdf` and `printing` packages (see pubspec.yaml).
+/// Requires the `pdf` and `printing` packages (see pubspec.yaml) and the
+/// BISU seal asset declared in pubspec.yaml.
 ///
 /// Opened from the drawer as: ReportsScreen(standalone: true)
 const double kDefaultPassingPercent = 75;
+
+/// Path of the official BISU seal image. Add the file to the project and
+/// declare it under `flutter: assets:` in pubspec.yaml.
+const String _bisuLogoAsset = 'assets/images/bisu_logo.png';
 
 class ReportsScreen extends StatefulWidget {
   /// true  → returns its own Scaffold + AppBar (own page).
@@ -236,6 +256,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (!widget.standalone) return body;
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F8),
+      // The blue bar keeps the back button and the "Reports" title. The
+      // official BISU letterhead sits directly under it (see
+      // _buildBisuHeader), so it is the first thing shown on the page.
       appBar: AppBar(
         backgroundColor: _brand,
         foregroundColor: Colors.white,
@@ -243,6 +266,74 @@ class _ReportsScreenState extends State<ReportsScreen> {
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
       ),
       body: body,
+    );
+  }
+
+  // ── Official BISU header (on screen) ─────────────────────────────────────
+  // Text follows the official BISU letterhead: Republic of the Philippines /
+  // Bohol Island State University / Magsija, Balilihan, 6342, Bohol,
+  // Philippines / Balance | Integrity | Stewardship | Uprightness.
+  // The seal comes from the project asset; if the file is missing, only the
+  // text is shown.
+  Widget _buildBisuHeader({required bool narrow}) {
+    final logoSize = narrow ? 46.0 : 64.0;
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+          narrow ? 12 : 16, narrow ? 10 : 12, narrow ? 12 : 16, 0),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            Image.asset(
+              _bisuLogoAsset,
+              width: logoSize,
+              height: logoSize,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            ),
+            SizedBox(width: narrow ? 10 : 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Republic of the Philippines',
+                      style: TextStyle(
+                          fontSize: narrow ? 11 : 13,
+                          color: Colors.grey[800])),
+                  Text('BOHOL ISLAND STATE UNIVERSITY',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: narrow ? 14 : 20,
+                          fontWeight: FontWeight.w800,
+                          color: _brand)),
+                  Text('Magsija, Balilihan, 6342, Bohol, Philippines',
+                      style: TextStyle(
+                          fontSize: narrow ? 10.5 : 12.5,
+                          color: Colors.grey[800])),
+                  Text(
+                      'Balance | Integrity | Stewardship | Uprightness',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: narrow ? 10 : 11.5,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.grey[700])),
+                ],
+              ),
+            ),
+          ]),
+          SizedBox(height: narrow ? 10 : 12),
+          Container(height: 3, color: _brand),
+        ],
+      ),
     );
   }
 
@@ -384,6 +475,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              _buildBisuHeader(narrow: w < 560),
+                              const SizedBox(height: 12),
                               _buildStats(scoped, narrow: w < 560),
                               const SizedBox(height: 12),
                               _buildBoardExamStats(scoped),
@@ -1091,18 +1184,46 @@ class _ReportsScreenState extends State<ReportsScreen> {
         break;
     }
 
+    // Preview (view first) and Print (direct) share the same report data.
+    final VoidCallback? onPreview = days.isEmpty
+        ? null
+        : () => _previewReport(
+              days: days,
+              tot: tot,
+              period: _rangeLabel(range),
+              subject: subjectText,
+              review: reviewText,
+              status: statusText,
+              search: searchText,
+            );
+    final VoidCallback? onPrint = days.isEmpty
+        ? null
+        : () => _printReport(
+              days: days,
+              tot: tot,
+              period: _rangeLabel(range),
+              subject: subjectText,
+              review: reviewText,
+              status: statusText,
+              search: searchText,
+            );
+
+    final previewBtn = OutlinedButton.icon(
+      onPressed: onPreview,
+      icon: const Icon(Icons.visibility_rounded, size: 16),
+      label: const Text('Preview',
+          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: _brand,
+        side: const BorderSide(color: _brand),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        minimumSize: const Size(0, 36),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+
     final printBtn = ElevatedButton.icon(
-      onPressed: days.isEmpty
-          ? null
-          : () => _printReport(
-                days: days,
-                tot: tot,
-                period: _rangeLabel(range),
-                subject: subjectText,
-                review: reviewText,
-                status: statusText,
-                search: searchText,
-              ),
+      onPressed: onPrint,
       icon: const Icon(Icons.print_rounded, size: 16),
       label: const Text('Print',
           style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
@@ -1114,6 +1235,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
         minimumSize: const Size(0, 36),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
+    );
+
+    // Icon-only versions for very narrow (phone) widths so nothing overflows.
+    final previewIcon = IconButton(
+      onPressed: onPreview,
+      tooltip: 'Preview',
+      icon: const Icon(Icons.visibility_rounded, size: 20),
+      color: _brand,
+    );
+    final printIcon = IconButton.filled(
+      onPressed: onPrint,
+      tooltip: 'Print',
+      icon: const Icon(Icons.print_rounded, size: 20),
+      style: IconButton.styleFrom(backgroundColor: _brand),
     );
 
     final periodChips = Wrap(spacing: 6, runSpacing: 6, children: [
@@ -1154,21 +1289,33 @@ class _ReportsScreenState extends State<ReportsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Title + Print
+          // Title + Preview + Print
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 12, 12, 2),
-            child: Row(children: [
-              const Icon(Icons.event_note_rounded, size: 17, color: _brand),
-              const SizedBox(width: 6),
-              const Expanded(
-                child: Text('Daily Review Report',
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14.5,
-                        color: _brand)),
-              ),
-              printBtn,
-            ]),
+            child: LayoutBuilder(builder: (context, c) {
+              final compact = c.maxWidth < 470;
+              return Row(children: [
+                const Icon(Icons.event_note_rounded, size: 17, color: _brand),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text('Daily Review Report',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14.5,
+                          color: _brand)),
+                ),
+                if (compact) ...[
+                  previewIcon,
+                  const SizedBox(width: 2),
+                  printIcon,
+                ] else ...[
+                  previewBtn,
+                  const SizedBox(width: 8),
+                  printBtn,
+                ],
+              ]);
+            }),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
@@ -1746,7 +1893,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     ]);
   }
 
-  // ── Print ────────────────────────────────────────────────────────────────
+  // ── Preview / Print ──────────────────────────────────────────────────────
   // PDF built-in fonts only cover Latin characters, so typographic symbols
   // are replaced with plain ones before printing.
   String _a(String s) => s
@@ -1758,6 +1905,41 @@ class _ReportsScreenState extends State<ReportsScreen> {
       .replaceAll('“', '"')
       .replaceAll('”', '"');
 
+  // VIEW FIRST: builds the same PDF that Print uses and shows it in a
+  // preview page (with the BISU header). Print / Save as PDF are available
+  // from that page.
+  Future<void> _previewReport({
+    required List<_Day> days,
+    required _Tot tot,
+    required String period,
+    required String subject,
+    required String review,
+    required String status,
+    required String search,
+  }) async {
+    try {
+      final bytes = await _buildPdf(
+        days: days,
+        tot: tot,
+        period: period,
+        subject: subject,
+        review: review,
+        status: status,
+        search: search,
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => _ReportPreviewPage(bytes: bytes)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open the report preview: $e')),
+      );
+    }
+  }
+
+  // DIRECT PRINT (unchanged behaviour): opens the print dialog right away.
   Future<void> _printReport({
     required List<_Day> days,
     required _Tot tot,
@@ -1805,6 +1987,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final red = PdfColor.fromInt(0xFFC62828);
     final grey = PdfColor.fromInt(0xFF5C6490);
 
+    // Official BISU seal. If the asset is missing the letterhead is printed
+    // without it (nothing is invented).
+    pw.MemoryImage? logo;
+    try {
+      final data = await rootBundle.load(_bisuLogoAsset);
+      logo = pw.MemoryImage(data.buffer.asUint8List());
+    } catch (_) {
+      logo = null;
+    }
+
     pw.Widget cell(
       String text, {
       bool bold = false,
@@ -1826,6 +2018,62 @@ class _ReportsScreenState extends State<ReportsScreen> {
         );
 
     final printed = _fmtDayTime(DateTime.now());
+
+    // ── Official BISU letterhead ───────────────────────────────────────────
+    pw.Widget letterhead() => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+              if (logo != null) ...[
+                pw.Container(
+                  width: 52,
+                  height: 52,
+                  child: pw.Image(logo, fit: pw.BoxFit.contain),
+                ),
+                pw.SizedBox(width: 10),
+              ],
+              pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text('Republic of the Philippines',
+                      style: const pw.TextStyle(fontSize: 9.5)),
+                  pw.Text('BOHOL ISLAND STATE UNIVERSITY',
+                      style: pw.TextStyle(
+                          fontSize: 15,
+                          fontWeight: pw.FontWeight.bold,
+                          color: brand)),
+                  pw.Text('Magsija, Balilihan, 6342, Bohol, Philippines',
+                      style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text('Balance | Integrity | Stewardship | Uprightness',
+                      style: pw.TextStyle(
+                          fontSize: 8.5,
+                          fontStyle: pw.FontStyle.italic,
+                          color: PdfColors.grey800)),
+                ],
+              ),
+            ]),
+            pw.SizedBox(height: 6),
+            pw.Container(height: 1.5, color: brand),
+            pw.SizedBox(height: 10),
+          ],
+        );
+
+    // Short header repeated on pages after the first.
+    pw.Widget compactHeader() => pw.Padding(
+          padding: const pw.EdgeInsets.only(bottom: 8),
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              pw.Text('Bohol Island State University - Daily Review Report',
+                  style: pw.TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: pw.FontWeight.bold,
+                      color: brand)),
+              pw.SizedBox(height: 3),
+              pw.Container(height: 0.8, color: brand),
+            ],
+          ),
+        );
 
     // ── Daily summary table ────────────────────────────────────────────────
     const heads = [
@@ -1991,6 +2239,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(30),
+        // BISU letterhead on page 1, short header on the following pages.
+        header: (ctx) => ctx.pageNumber == 1 ? letterhead() : compactHeader(),
         footer: (ctx) => pw.Container(
           alignment: pw.Alignment.centerRight,
           margin: const pw.EdgeInsets.only(top: 8),
@@ -2081,6 +2331,43 @@ class _ReportsScreenState extends State<ReportsScreen> {
           ),
         ),
       );
+}
+
+// ── Report preview page ──────────────────────────────────────────────────────
+/// Shows the report exactly as it will be printed (A4, with the BISU header).
+/// The toolbar of [PdfPreview] has Print and Save/Share, so the user views
+/// first and prints afterwards. The back arrow returns to the Reports page.
+class _ReportPreviewPage extends StatelessWidget {
+  final Uint8List bytes;
+  const _ReportPreviewPage({required this.bytes});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F2F8),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1A237E),
+        foregroundColor: Colors.white,
+        title: const Text('Report Preview',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+      ),
+      body: PdfPreview(
+        build: (format) async => bytes,
+        initialPageFormat: PdfPageFormat.a4,
+        pdfFileName: 'Daily_Review_Report.pdf',
+        canChangePageFormat: false,
+        canChangeOrientation: false,
+        canDebug: false,
+        allowPrinting: true,
+        allowSharing: true,
+        maxPageWidth: 760,
+        previewPageMargin: const EdgeInsets.all(10),
+        scrollViewDecoration: const BoxDecoration(color: Color(0xFFF0F2F8)),
+        loadingWidget:
+            const CircularProgressIndicator(color: Color(0xFF1A237E)),
+      ),
+    );
+  }
 }
 
 // ── Data holders ─────────────────────────────────────────────────────────────
